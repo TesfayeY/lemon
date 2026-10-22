@@ -1,9 +1,11 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
+import type { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface AppDependencies {
   mongoCheck: () => Promise<boolean>;
   firebaseCheck: () => Promise<boolean>;
+  routes?: Router[];
 }
 
 export function createApp(deps: AppDependencies) {
@@ -51,6 +53,13 @@ export function createApp(deps: AppDependencies) {
       meta: { requestId: req.requestId },
     });
   });
+
+  // Mount feature routes
+  if (deps.routes) {
+    for (const router of deps.routes) {
+      app.use(router);
+    }
+  }
 
   // 404 for unknown routes
   app.use((req: Request, res: Response) => {
