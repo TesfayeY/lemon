@@ -190,6 +190,26 @@ export function createAuthRoutes(db: Db, auth: Auth) {
       updates['adultEligible'] = true;
     }
 
+    // Handle terms acceptance
+    if (body['termsAccepted'] !== undefined) {
+      if (body['termsAccepted'] !== true) {
+        res.status(422).json({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'You must accept the terms to continue',
+            fieldErrors: [{ field: 'termsAccepted', message: 'Must be true' }],
+            retryable: false,
+          },
+          requestId: req.requestId,
+        });
+        return;
+      }
+      updates['agreements'] = {
+        termsVersion: '1.0',
+        acceptedAt: new Date(),
+      };
+    }
+
     if (Object.keys(updates).length === 0) {
       res.status(400).json({
         error: { code: 'NO_UPDATES', message: 'No valid fields provided', retryable: false },
