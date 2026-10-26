@@ -45,3 +45,6 @@ coverage/
 
 # Logs
 *.log
+
+# Firebase emulator logs
+*-debug.log
