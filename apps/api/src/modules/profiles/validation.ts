@@ -1,5 +1,5 @@
 import { graphemeLength, normalizeWhitespace } from './schema.js';
-import { isValidCityId, isValidGenderId, isValidIntentionId, isValidPromptId, findCity } from '../catalogs/data.js';
+import { isValidCityId, isValidGenderId, isValidIntentionId, isValidPromptId } from '../catalogs/data.js';
 
 export interface FieldError {
   field: string;
