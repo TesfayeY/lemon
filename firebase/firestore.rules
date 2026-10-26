@@ -1,4 +1,10 @@
 rules_version = '2';
+
+// Firestore holds chat only. Express writes everything through the Admin SDK,
+// which bypasses these rules, so every client write is denied and reads are
+// limited to active rooms whose two participants both have enabled access.
+// Clients attach listeners to explicit room IDs returned by Express; room
+// collection listing is never allowed.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -9,36 +15,58 @@ service cloud.firestore {
 
     // Chat access projection - server-written, clients read own doc
     match /chatAccess/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if false; // Server-only via Admin SDK
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list, write: if false;
     }
 
     // Chat rooms - participants can read active rooms only
     match /rooms/{roomId} {
-      allow read: if request.auth != null
-        && request.auth.uid in resource.data.participantUids
-        && resource.data.status == 'active'
-        && isParticipantEnabled(request.auth.uid);
-      allow write: if false; // Server-only via Admin SDK
+      allow get: if canReadRoom(resource.data);
+      allow list, write: if false;
 
-      // Messages within a room
+      // Messages within a room - bounded queries by members of a readable room
       match /messages/{messageId} {
-        allow read: if request.auth != null
-          && request.auth.uid in get(/databases/$(database)/documents/rooms/$(roomId)).data.participantUids
-          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
-          && isParticipantEnabled(request.auth.uid);
-        allow write: if false; // Server-only via Admin SDK
+        allow read: if canReadRoom(roomData(roomId));
+        allow write: if false;
       }
 
-      // Read states
+      // Read states - each member reads only their own marker
       match /readStates/{uid} {
-        allow read: if request.auth != null && request.auth.uid == uid;
-        allow write: if false; // Server-only via Admin SDK
+        allow get: if request.auth.uid == uid && canReadRoom(roomData(roomId));
+        allow list, write: if false;
       }
     }
 
-    function isParticipantEnabled(uid) {
-      return get(/databases/$(database)/documents/chatAccess/$(uid)).data.enabled == true;
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function roomData(roomId) {
+      return get(/databases/$(database)/documents/rooms/$(roomId)).data;
+    }
+
+    // Exactly two distinct participant UIDs
+    function hasValidParticipants(room) {
+      return room.participantUids is list
+        && room.participantUids.size() == 2
+        && room.participantUids[0] is string
+        && room.participantUids[1] is string
+        && room.participantUids[0] != room.participantUids[1];
+    }
+
+    function accessEnabled(uid) {
+      let path = /databases/$(database)/documents/chatAccess/$(uid);
+      return exists(path) && get(path).data.enabled == true;
+    }
+
+    function canReadRoom(room) {
+      return signedIn()
+        && room != null
+        && room.status == 'active'
+        && hasValidParticipants(room)
+        && request.auth.uid in room.participantUids
+        && accessEnabled(room.participantUids[0])
+        && accessEnabled(room.participantUids[1]);
     }
   }
 }
