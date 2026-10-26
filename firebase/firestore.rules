@@ -24,15 +24,17 @@ service cloud.firestore {
       allow get: if canReadRoom(resource.data);
       allow list, write: if false;
 
-      // Messages within a room - bounded queries by members of a readable room
+      // Messages within a room - members of a readable room may get one message
+      // or run history queries of at most 30 (R-CHAT-06); unbounded lists fail
       match /messages/{messageId} {
-        allow read: if canReadRoom(roomData(roomId));
+        allow get: if canReadRoom(roomData(roomId));
+        allow list: if request.query.limit <= 30 && canReadRoom(roomData(roomId));
         allow write: if false;
       }
 
       // Read states - each member reads only their own marker
       match /readStates/{uid} {
-        allow get: if request.auth.uid == uid && canReadRoom(roomData(roomId));
+        allow get: if signedIn() && request.auth.uid == uid && canReadRoom(roomData(roomId));
         allow list, write: if false;
       }
     }
@@ -61,7 +63,6 @@ service cloud.firestore {
 
     function canReadRoom(room) {
       return signedIn()
-        && room != null
         && room.status == 'active'
         && hasValidParticipants(room)
         && request.auth.uid in room.participantUids

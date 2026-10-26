@@ -157,6 +157,14 @@ describe('messages', () => {
     await assertSucceeds(getDoc(doc(as(BOB), 'rooms/m1/messages/msg1')));
   });
 
+  it('denies a member history query without a limit or above 30', async () => {
+    await seedActiveRoom();
+    const messages = collection(as(ALICE), 'rooms/m1/messages');
+    await assertFails(getDocs(messages));
+    await assertFails(getDocs(query(messages, orderBy('sequence', 'desc'))));
+    await assertFails(getDocs(query(messages, orderBy('sequence', 'desc'), limit(31))));
+  });
+
   it('denies anonymous users and nonmembers', async () => {
     await seedActiveRoom();
     await assertFails(getDoc(doc(anon(), 'rooms/m1/messages/msg1')));
@@ -186,6 +194,7 @@ describe('readStates', () => {
     await seedActiveRoom();
     await assertSucceeds(getDoc(doc(as(ALICE), `rooms/m1/readStates/${ALICE}`)));
     await assertFails(getDoc(doc(as(ALICE), `rooms/m1/readStates/${BOB}`)));
+    await assertFails(getDoc(doc(anon(), `rooms/m1/readStates/${ALICE}`)));
   });
 
   it('denies a nonmember reading a read state under their own uid', async () => {

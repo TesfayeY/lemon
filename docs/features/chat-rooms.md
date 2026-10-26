@@ -20,8 +20,8 @@ Later, room provisioning will add `apps/api/src/modules/chat/**` and `apps/api/s
   - the room has exactly two distinct participant UIDs
   - the reader is one of them
   - **both** participants' `chatAccess` documents exist with `enabled == true`
-- Every client write is denied. Listing `rooms` is denied: clients attach listeners to explicit room IDs returned by Express. The bounded message history query (`orderBy sequence desc, limit 30`) is allowed for members.
-- 24 rules tests using `@firebase/rules-unit-testing` against the emulator. They cover anonymous, nonmember, disabled participant (self or other), missing access doc, closed/provisioning rooms, malformed participant shapes, read-state isolation, listener queries and every client write.
+- Every client write is denied. Listing `rooms` is denied: clients attach listeners to explicit room IDs returned by Express. Members can run the bounded message history query (`orderBy sequence desc, limit 30`). Rules require `request.query.limit <= 30` on message lists, so queries with no limit or a larger one are denied.
+- 25 rules tests using `@firebase/rules-unit-testing` against the emulator. They cover anonymous, nonmember, disabled participant (self or other), missing access doc, closed/provisioning rooms, malformed participant shapes, read-state isolation, listener queries (including unbounded and oversized history queries) and every client write.
 
 Run them with `scripts/test-firebase-rules.sh`. This needs a Java runtime; on macOS, run `brew install openjdk@21`.
 
