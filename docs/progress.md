@@ -88,9 +88,9 @@ Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open
 - Dart DTOs: `core/api/api_error.dart`, `core/catalogs/catalogs.dart`, `features/onboarding/data/account.dart`, `features/profile/data/{profile,preferences}.dart`
 - Fictional seed profiles: `scripts/seed.sh` (8 people, refuses production, idempotent)
 
-### Tests (146 API + 30 Flutter passing)
+### Tests (149 API + 30 Flutter passing)
 - Validation: Ethiopic/combining-character names at the 40-grapheme limit, whitespace-only and non-string names, unknown catalog IDs (city, gender, intention, language, prompt), text limits, heights, age bounds
-- Prompts: pending on create, approved text stays published during an edit, stale edit conflict, other user's answer edit/delete denied, only published answers count toward readiness
+- Prompts: answer cap holds under concurrent submissions (unique owner/slot index, also verified against local MongoDB), pending on create, approved text stays published during an edit, stale edit conflict, other user's answer edit/delete denied, only published answers count toward readiness
 - Two-device profile, preference and answer edits; server-owned fields ignored
 - Readiness: every requirement; resumable missing list across devices
 - Contract: every fixture validates against the schema; live responses for every Phase 03-04 endpoint (incl. errors) validate; leaked private field and pending text are rejected
@@ -103,4 +103,4 @@ Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open
 - API route tests use an in-memory collection stand-in; real-Mongo race tests are Phase 17
 - `npm run lint` has no `eslint.config.*` yet
 
-## Total: 176 tests passing (146 API + 30 Flutter)
+## Total: 179 tests passing (149 API + 30 Flutter)

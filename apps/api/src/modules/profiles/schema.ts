@@ -46,6 +46,7 @@ export interface PromptAnswerDocument {
   _id: string;
   ownerId: string;
   promptId: string;
+  slot: number; // 0..MAX_PROMPT_ANSWERS-1; unique per owner, so the database caps the count
   approvedText: string | null; // published; the only text other users see
   pendingText: string | null; // awaiting review; never published automatically
   state: 'approved' | 'pending' | 'rejected'; // review state of the latest submission
@@ -54,6 +55,9 @@ export interface PromptAnswerDocument {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/** Answers per profile; enforced by the unique (ownerId, slot) index */
+export const MAX_PROMPT_ANSWERS = 3;
 
 /** Grapheme limit for optional free-text fields (hometown, occupation, education, religion) */
 export const OPTIONAL_TEXT_MAX = 100;

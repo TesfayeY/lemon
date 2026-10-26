@@ -4,7 +4,7 @@ import type { Auth } from 'firebase-admin/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
 import { canInteract, type UserDocument } from '../auth/account.js';
-import { createEmptyProfile, normalizeWhitespace, type ProfileDocument, type PromptAnswerDocument } from './schema.js';
+import { createEmptyProfile, normalizeWhitespace, MAX_PROMPT_ANSWERS, type ProfileDocument, type PromptAnswerDocument } from './schema.js';
 import {
   validateDisplayName, validateGenderIdentity, validateIntention,
   validateCity, validateVisibility, validateBio, validatePromptAnswer,
@@ -255,7 +255,7 @@ export function createProfileRoutes(db: Db, auth: Auth) {
 
   /**
    * POST /v1/me/prompts
-   * Add a prompt answer. Max 3 distinct prompts.
+   * Add a prompt answer. At most MAX_PROMPT_ANSWERS, one per distinct prompt.
    */
   router.post('/v1/me/prompts', requireAuth, async (req: Request, res: Response) => {
     const { uid } = req as AuthenticatedRequest;
@@ -285,50 +285,60 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    // Check for duplicate prompt
-    const existing = await promptAnswers.findOne({
-      ownerId: user._id,
-      promptId: body['promptId'] as string,
+    const promptId = body['promptId'] as string;
+    const sendDuplicate = () => res.status(409).json({
+      error: { code: 'DUPLICATE_PROMPT', message: 'You already answered this prompt', retryable: false },
+      requestId: req.requestId,
     });
-    if (existing) {
-      res.status(409).json({
-        error: { code: 'DUPLICATE_PROMPT', message: 'You already answered this prompt', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
+
+    // Claim the first free slot. The unique (ownerId, slot) index makes the cap
+    // atomic: a concurrent request that took the same slot makes this insert
+    // fail, and the re-read decides between the next slot, a duplicate or the limit.
+    // Each lost race means another answer landed, so MAX + 1 rounds always settle.
+    let answer: PromptAnswerDocument | null = null;
+    for (let round = 0; round <= MAX_PROMPT_ANSWERS && !answer; round++) {
+      const owned = await promptAnswers.find({ ownerId: user._id }).toArray();
+      if (owned.some(a => a.promptId === promptId)) {
+        sendDuplicate();
+        return;
+      }
+      const used = new Set(owned.map(a => a.slot));
+      const slot = Array.from({ length: MAX_PROMPT_ANSWERS }, (_, i) => i).find(i => !used.has(i));
+      if (slot === undefined) {
+        res.status(422).json({
+          error: { code: 'PROMPT_LIMIT', message: `You can have at most ${MAX_PROMPT_ANSWERS} prompt answers`, retryable: false },
+          requestId: req.requestId,
+        });
+        return;
+      }
+
+      // New answers wait for review; nothing is published until it is approved
+      const candidate: PromptAnswerDocument = {
+        _id: uuidv4(),
+        ownerId: user._id,
+        promptId,
+        slot,
+        approvedText: null,
+        pendingText: normalizeWhitespace(body['text'] as string),
+        state: 'pending',
+        revision: 1,
+        publishedRevision: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      try {
+        await promptAnswers.insertOne(candidate);
+        answer = candidate;
+      } catch (err: unknown) {
+        // Lost a race for this slot or this prompt; the next round re-reads
+        if (!isDuplicateKeyError(err)) throw err;
+      }
     }
 
-    // Max 3 prompts
-    const count = await promptAnswers.countDocuments({ ownerId: user._id });
-    if (count >= 3) {
-      res.status(422).json({
-        error: { code: 'PROMPT_LIMIT', message: 'You can have at most 3 prompt answers', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
-
-    // New answers wait for review; nothing is published until it is approved
-    const answer: PromptAnswerDocument = {
-      _id: uuidv4(),
-      ownerId: user._id,
-      promptId: body['promptId'] as string,
-      approvedText: null,
-      pendingText: normalizeWhitespace(body['text'] as string),
-      state: 'pending',
-      revision: 1,
-      publishedRevision: 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    try {
-      await promptAnswers.insertOne(answer);
-    } catch (err: unknown) {
-      // Concurrent duplicate submission hit the unique (ownerId, promptId) index
-      if (!isDuplicateKeyError(err)) throw err;
+    if (!answer) {
+      // Only reachable if concurrent deletes keep freeing slots mid-race
       res.status(409).json({
-        error: { code: 'DUPLICATE_PROMPT', message: 'You already answered this prompt', retryable: false },
+        error: { code: 'CONCURRENT_EDIT', message: 'Your answers changed while saving. Please try again.', retryable: true },
         requestId: req.requestId,
       });
       return;

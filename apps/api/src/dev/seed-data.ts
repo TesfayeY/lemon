@@ -159,6 +159,7 @@ export function buildSeedDocuments(): SeedDocuments {
         _id: `seed-answer-${n}-${j + 1}`,
         ownerId: userId,
         promptId,
+        slot: j,
         approvedText: text,
         pendingText: null,
         state: 'approved',

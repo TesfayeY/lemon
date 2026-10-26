@@ -27,7 +27,7 @@ const UNIQUE_KEYS: Record<string, string[][]> = {
   users: [['firebaseUid']],
   profiles: [['userId']],
   preferences: [['userId']],
-  promptAnswers: [['ownerId', 'promptId']],
+  promptAnswers: [['ownerId', 'promptId'], ['ownerId', 'slot']],
 };
 
 /** Equality plus the few operators the routes use ($ne) */
@@ -144,3 +144,35 @@ export function buildApp(auth?: Auth, db?: Db) {
   });
 }
 
+
+/**
+ * Hold the first `arrivals` inserts into a collection until all of them have
+ * arrived, then release them together. Every racing request has finished its
+ * reads before any write lands, which makes check-then-insert races repeatable.
+ * Later inserts (e.g. retries) pass straight through.
+ */
+export function withInsertBarrier(db: Db, collectionName: string, arrivals: number): Db {
+  const waiting: (() => void)[] = [];
+  let released = false;
+  return {
+    collection: (name: string) => {
+      const col = db.collection(name);
+      if (name !== collectionName) return col;
+      return {
+        ...col,
+        insertOne: async (doc: Record<string, unknown>) => {
+          if (!released) {
+            await new Promise<void>(resolve => {
+              waiting.push(resolve);
+              if (waiting.length === arrivals) {
+                released = true;
+                waiting.forEach(release => release());
+              }
+            });
+          }
+          return col.insertOne(doc as never);
+        },
+      };
+    },
+  } as unknown as Db;
+}

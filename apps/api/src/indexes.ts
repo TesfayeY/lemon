@@ -11,6 +11,8 @@ export async function ensureIndexes(db: Db): Promise<void> {
     db.collection('profiles').createIndex({ userId: 1 }, { unique: true }),
     db.collection('preferences').createIndex({ userId: 1 }, { unique: true }),
     db.collection('promptAnswers').createIndex({ ownerId: 1, promptId: 1 }, { unique: true }),
+    // One answer per slot caps answers per owner atomically, even under concurrent inserts
+    db.collection('promptAnswers').createIndex({ ownerId: 1, slot: 1 }, { unique: true }),
   ]);
 }
 

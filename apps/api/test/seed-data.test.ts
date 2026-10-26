@@ -44,6 +44,7 @@ describe('Fictional seed profiles', () => {
       const answers = docs.promptAnswers.filter(a => a.ownerId === u._id);
       expect(answers).toHaveLength(3);
       expect(new Set(answers.map(a => a.promptId)).size).toBe(3);
+      expect(answers.map(a => a.slot).sort()).toEqual([0, 1, 2]);
       for (const a of answers) {
         expect(validatePromptId(a.promptId)).toBeNull();
         expect(validatePromptAnswer(a.approvedText)).toBeNull();

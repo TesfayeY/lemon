@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import type { Auth } from 'firebase-admin/auth';
-import { buildApp, createInMemoryDb, createMultiUserAuth } from './support.js';
+import { buildApp, createInMemoryDb, createMultiUserAuth, withInsertBarrier } from './support.js';
 import type { Db } from 'mongodb';
 import { graphemeLength, normalizeWhitespace } from '../src/modules/profiles/schema.js';
 import { checkReadiness } from '../src/modules/profiles/readiness.js';
@@ -230,6 +230,50 @@ describe('POST /v1/me/prompts', () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('PROMPT_LIMIT');
+  });
+
+  it('never exceeds 3 answers when different prompts are submitted concurrently', async () => {
+    const prompts = ['prompt-tradition', 'prompt-home', 'prompt-sunday', 'prompt-song', 'prompt-travel', 'prompt-cooking'];
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, withInsertBarrier(db, 'promptAnswers', prompts.length));
+    await bootstrapUser(app);
+
+    const results = await Promise.all(prompts.map(promptId =>
+      request(app).post('/v1/me/prompts').set('Authorization', 'Bearer valid-token').send({ promptId, text: 'Answer' })));
+
+    expect(results.filter(r => r.status === 201)).toHaveLength(3);
+    expect(results.filter(r => r.status !== 201).every(r => r.body.error.code === 'PROMPT_LIMIT')).toBe(true);
+    const user = await db.collection<UserDocument>('users').findOne({ firebaseUid: 'firebase-uid-1' });
+    expect(await db.collection('promptAnswers').countDocuments({ ownerId: user!._id })).toBe(3);
+  });
+
+  it('accepts only one of several concurrent answers to the same prompt', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, withInsertBarrier(db, 'promptAnswers', 3));
+    await bootstrapUser(app);
+
+    const results = await Promise.all([1, 2, 3].map(n =>
+      request(app).post('/v1/me/prompts').set('Authorization', 'Bearer valid-token')
+        .send({ promptId: 'prompt-tradition', text: `Answer ${n}` })));
+
+    expect(results.map(r => r.status).sort()).toEqual([201, 409, 409]);
+    expect(results.filter(r => r.status === 409).every(r => r.body.error.code === 'DUPLICATE_PROMPT')).toBe(true);
+  });
+
+  it('frees a slot when an answer is deleted', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    const post = (promptId: string) =>
+      request(app).post('/v1/me/prompts').set('Authorization', 'Bearer valid-token').send({ promptId, text: 'Answer' });
+
+    const first = await post('prompt-tradition');
+    await post('prompt-home');
+    await post('prompt-sunday');
+    expect((await post('prompt-song')).status).toBe(422);
+
+    await request(app).delete(`/v1/me/prompts/${first.body.data.id}`).set('Authorization', 'Bearer valid-token');
+    expect((await post('prompt-song')).status).toBe(201);
+    expect((await post('prompt-travel')).status).toBe(422);
   });
 
   it('rejects unknown prompt ID', async () => {
@@ -718,8 +762,8 @@ describe('toPublicProfileDTO', () => {
   };
 
   const answers: PromptAnswerDocument[] = [
-    { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', approvedText: 'Buna', pendingText: 'Pending replacement', state: 'pending', revision: 2, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
-    { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', approvedText: null, pendingText: 'Pending answer', state: 'pending', revision: 1, publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', slot: 0, approvedText: 'Buna', pendingText: 'Pending replacement', state: 'pending', revision: 2, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', slot: 1, approvedText: null, pendingText: 'Pending answer', state: 'pending', revision: 1, publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
   ];
 
   const dto = toPublicProfileDTO(profile, user, answers);
