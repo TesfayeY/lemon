@@ -31,7 +31,7 @@ export async function recomputeReadiness(
 
   const { ready } = checkReadiness(user, profile, {
     interests: prefs?.acceptedGenderCategories.length ?? 0,
-    approvedPhotos: 0, // Photos not yet implemented — Phase 05
+    approvedPhotos: await db.collection('photos').countDocuments({ ownerId: userId, state: 'approved' }),
     approvedAnswers,
   });
 
