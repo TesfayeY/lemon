@@ -54,6 +54,8 @@ function createMockCollection() {
       }
       return { modifiedCount: 0 };
     }),
+    // Readiness counts published prompt answers; none exist in these tests
+    countDocuments: vi.fn(async () => 0),
   };
 }
 

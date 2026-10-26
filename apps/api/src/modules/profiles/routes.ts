@@ -8,7 +8,7 @@ import { createEmptyProfile, normalizeWhitespace, type ProfileDocument, type Pro
 import {
   validateDisplayName, validateGenderIdentity, validateIntention,
   validateCity, validateVisibility, validateBio, validatePromptAnswer,
-  validatePromptId, validateHeight, type FieldError,
+  validatePromptId, validateHeight, validateOptionalText, validateLanguages, type FieldError,
 } from './validation.js';
 import { toSelfProfileDTO, toPublicProfileDTO } from './dto.js';
 import { recomputeReadiness } from './readiness-service.js';
@@ -145,14 +145,18 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       }
     }
 
+    if (body['languages'] !== undefined) {
+      const err = validateLanguages(body['languages']);
+      if (err) errors.push(err);
+      else updates['languages'] = [...new Set(body['languages'] as string[])];
+    }
+
     // Simple string optional fields
     for (const field of ['hometown', 'occupation', 'education', 'religion']) {
       if (body[field] !== undefined) {
-        if (body[field] !== null && typeof body[field] !== 'string') {
-          errors.push({ field, message: 'Must be a string or null' });
-        } else {
-          updates[field] = body[field] === null ? null : normalizeWhitespace(body[field] as string);
-        }
+        const err = validateOptionalText(body[field], field);
+        if (err) errors.push(err);
+        else updates[field] = body[field] === null ? null : normalizeWhitespace(body[field] as string);
       }
     }
 
@@ -201,8 +205,33 @@ export function createProfileRoutes(db: Db, auth: Auth) {
   });
 
   /**
+   * GET /v1/me/profile
+   * Owner view: every own field, visibility settings and answers awaiting review.
+   */
+  router.get('/v1/me/profile', requireAuth, async (req: Request, res: Response) => {
+    const { uid } = req as AuthenticatedRequest;
+    const user = await users.findOne({ firebaseUid: uid });
+    if (!user) {
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    const profile = await findOrCreateProfile(user._id);
+    const answers = await promptAnswers.find({ ownerId: user._id }).toArray();
+
+    res.json({
+      data: toSelfProfileDTO(profile, user, answers),
+      meta: { requestId: req.requestId },
+    });
+  });
+
+  /**
    * GET /v1/me/profile/preview
-   * Self preview with public projection semantics.
+   * Self preview with public projection semantics: exactly what others would
+   * see, so hidden fields and unreviewed answers are absent.
    */
   router.get('/v1/me/profile/preview', requireAuth, async (req: Request, res: Response) => {
     const { uid } = req as AuthenticatedRequest;
@@ -217,10 +246,9 @@ export function createProfileRoutes(db: Db, auth: Auth) {
 
     const profile = await findOrCreateProfile(user._id);
     const answers = await promptAnswers.find({ ownerId: user._id }).toArray();
-    const selfDTO = toSelfProfileDTO(profile, user, answers);
 
     res.json({
-      data: selfDTO,
+      data: toPublicProfileDTO(profile, user, answers),
       meta: { requestId: req.requestId },
     });
   });
@@ -280,13 +308,16 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
+    // New answers wait for review; nothing is published until it is approved
     const answer: PromptAnswerDocument = {
       _id: uuidv4(),
       ownerId: user._id,
       promptId: body['promptId'] as string,
-      text: normalizeWhitespace(body['text'] as string),
-      state: 'approved', // Auto-approve for dev; manual review in Phase 13
-      publishedRevision: 1,
+      approvedText: null,
+      pendingText: normalizeWhitespace(body['text'] as string),
+      state: 'pending',
+      revision: 1,
+      publishedRevision: 0,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -305,7 +336,83 @@ export function createProfileRoutes(db: Db, auth: Auth) {
     await recomputeReadiness(db, user._id);
 
     res.status(201).json({
-      data: { id: answer._id, promptId: answer.promptId, state: answer.state },
+      data: { id: answer._id, promptId: answer.promptId, state: answer.state, revision: answer.revision },
+      meta: { requestId: req.requestId },
+    });
+  });
+
+  /**
+   * PATCH /v1/me/prompts/:id
+   * Submit replacement text for review. Approved text stays published until
+   * review accepts the replacement, so readiness is unaffected.
+   */
+  router.patch('/v1/me/prompts/:id', requireAuth, async (req: Request, res: Response) => {
+    const { uid } = req as AuthenticatedRequest;
+    const user = await users.findOne({ firebaseUid: uid });
+    if (!user) {
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    const answerId = req.params['id'] as string;
+    const answer = await promptAnswers.findOne({ _id: answerId, ownerId: user._id });
+    if (!answer) {
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Prompt answer not found', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const errors: FieldError[] = [];
+    const expectedRevision = body['expectedRevision'];
+    if (typeof expectedRevision !== 'number' || !Number.isInteger(expectedRevision)) {
+      errors.push({ field: 'expectedRevision', message: 'Required integer revision' });
+    }
+    const textErr = validatePromptAnswer(body['text']);
+    if (textErr) errors.push(textErr);
+
+    if (errors.length > 0) {
+      res.status(422).json({
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid fields', fieldErrors: errors, retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    const revision = answer.revision + 1;
+    // Compare-and-set on revision so concurrent edits cannot both win
+    const result = await promptAnswers.updateOne(
+      { _id: answer._id, ownerId: user._id, revision: expectedRevision as number },
+      {
+        $set: {
+          pendingText: normalizeWhitespace(body['text'] as string),
+          state: 'pending',
+          revision,
+          updatedAt: new Date(),
+        },
+      },
+    );
+    if (result.matchedCount === 0) {
+      const current = await promptAnswers.findOne({ _id: answer._id });
+      res.status(409).json({
+        error: {
+          code: 'REVISION_CONFLICT',
+          message: 'This answer has been modified. Please refresh and try again.',
+          currentRevision: current?.revision ?? answer.revision,
+          retryable: true,
+        },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    res.json({
+      data: { id: answer._id, state: 'pending', revision },
       meta: { requestId: req.requestId },
     });
   });
@@ -384,9 +491,10 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
+    // Published text only; an answer with an edit awaiting review stays visible
     const answers = await promptAnswers.find({
       ownerId: targetUserId,
-      state: 'approved',
+      approvedText: { $ne: null },
     }).toArray();
 
     const publicDTO = toPublicProfileDTO(profile, targetUser, answers);

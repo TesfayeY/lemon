@@ -2,8 +2,29 @@ import type { Db } from 'mongodb';
 import type { UserDocument } from '../auth/account.js';
 import { AccountStatus } from '../auth/account.js';
 import type { PreferencesDocument } from '../preferences/schema.js';
-import type { ProfileDocument, PromptAnswerDocument } from './schema.js';
-import { checkReadiness } from './readiness.js';
+import { createEmptyProfile, type ProfileDocument, type PromptAnswerDocument } from './schema.js';
+import { checkReadiness, type ReadinessCheck } from './readiness.js';
+
+/**
+ * Evaluate readiness from current server state without persisting it.
+ * A user who has not started their profile is checked against an empty draft,
+ * so the missing list doubles as the resumable onboarding checklist.
+ */
+export async function evaluateReadiness(db: Db, user: UserDocument): Promise<ReadinessCheck> {
+  const profile = await db.collection<ProfileDocument>('profiles').findOne({ userId: user._id });
+  const prefs = await db.collection<PreferencesDocument>('preferences').findOne({ userId: user._id });
+  // Only published text counts; an answer awaiting first review does not
+  const approvedAnswers = await db.collection<PromptAnswerDocument>('promptAnswers').countDocuments({
+    ownerId: user._id,
+    approvedText: { $ne: null },
+  });
+
+  return checkReadiness(user, profile ?? createEmptyProfile(user._id), {
+    interests: prefs?.acceptedGenderCategories.length ?? 0,
+    approvedPhotos: 0, // Photos not yet implemented — Phase 05
+    approvedAnswers,
+  });
+}
 
 /**
  * Recompute and persist profile readiness for a user.
@@ -20,20 +41,9 @@ export async function recomputeReadiness(
 ): Promise<boolean> {
   const users = db.collection<UserDocument>('users');
   const user = await users.findOne({ _id: userId });
-  const profile = await db.collection<ProfileDocument>('profiles').findOne({ userId });
-  if (!user || !profile) return false;
+  if (!user) return false;
 
-  const prefs = await db.collection<PreferencesDocument>('preferences').findOne({ userId });
-  const approvedAnswers = await db.collection<PromptAnswerDocument>('promptAnswers').countDocuments({
-    ownerId: userId,
-    state: 'approved',
-  });
-
-  const { ready } = checkReadiness(user, profile, {
-    interests: prefs?.acceptedGenderCategories.length ?? 0,
-    approvedPhotos: 0, // Photos not yet implemented — Phase 05
-    approvedAnswers,
-  });
+  const { ready } = await evaluateReadiness(db, user);
 
   const set: Partial<UserDocument> = {};
   if (user.profileReady !== ready) set.profileReady = ready;

@@ -3,7 +3,7 @@ import type { Db } from 'mongodb';
 import type { Auth } from 'firebase-admin/auth';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
 import type { UserDocument } from '../auth/account.js';
-import { createDefaultPreferences, type PreferencesDocument, type LocationScope } from './schema.js';
+import { createDefaultPreferences, MIN_AGE, MAX_AGE, type PreferencesDocument, type LocationScope } from './schema.js';
 import { isValidGenderId } from '../catalogs/data.js';
 import { isDuplicateKeyError } from '../../indexes.js';
 import { recomputeReadiness } from '../profiles/readiness-service.js';
@@ -125,8 +125,8 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
     if (body['minAge'] !== undefined) {
       if (typeof body['minAge'] !== 'number' || !Number.isInteger(body['minAge'])) {
         errors.push({ field: 'minAge', message: 'Must be an integer' });
-      } else if ((body['minAge'] as number) < 18) {
-        errors.push({ field: 'minAge', message: 'Minimum age is 18' });
+      } else if ((body['minAge'] as number) < MIN_AGE || (body['minAge'] as number) > MAX_AGE) {
+        errors.push({ field: 'minAge', message: `Must be between ${MIN_AGE} and ${MAX_AGE}` });
       } else {
         updates['minAge'] = body['minAge'];
       }
@@ -135,8 +135,8 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
     if (body['maxAge'] !== undefined) {
       if (typeof body['maxAge'] !== 'number' || !Number.isInteger(body['maxAge'])) {
         errors.push({ field: 'maxAge', message: 'Must be an integer' });
-      } else if ((body['maxAge'] as number) < 18) {
-        errors.push({ field: 'maxAge', message: 'Maximum age must be at least 18' });
+      } else if ((body['maxAge'] as number) < MIN_AGE || (body['maxAge'] as number) > MAX_AGE) {
+        errors.push({ field: 'maxAge', message: `Must be between ${MIN_AGE} and ${MAX_AGE}` });
       } else {
         updates['maxAge'] = body['maxAge'];
       }

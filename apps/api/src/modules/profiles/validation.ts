@@ -1,5 +1,5 @@
-import { graphemeLength, normalizeWhitespace } from './schema.js';
-import { isValidCityId, isValidGenderId, isValidIntentionId, isValidPromptId, findCity } from '../catalogs/data.js';
+import { graphemeLength, normalizeWhitespace, OPTIONAL_TEXT_MAX } from './schema.js';
+import { isValidCityId, isValidGenderId, isValidIntentionId, isValidLanguageId, isValidPromptId } from '../catalogs/data.js';
 
 export interface FieldError {
   field: string;
@@ -70,6 +70,23 @@ export function validateHeight(height: unknown): FieldError | null {
   }
   if (height < 100 || height > 250) {
     return { field: 'height', message: 'Height must be between 100 and 250 cm' };
+  }
+  return null;
+}
+
+export function validateOptionalText(value: unknown, field: string): FieldError | null {
+  if (value === null) return null;
+  if (typeof value !== 'string') return { field, message: 'Must be a string or null' };
+  if (graphemeLength(normalizeWhitespace(value)) > OPTIONAL_TEXT_MAX) {
+    return { field, message: `Must be ${OPTIONAL_TEXT_MAX} characters or fewer` };
+  }
+  return null;
+}
+
+export function validateLanguages(ids: unknown): FieldError | null {
+  if (!Array.isArray(ids)) return { field: 'languages', message: 'Must be an array' };
+  if (!ids.every(id => typeof id === 'string' && isValidLanguageId(id))) {
+    return { field: 'languages', message: 'Contains unknown language' };
   }
   return null;
 }
