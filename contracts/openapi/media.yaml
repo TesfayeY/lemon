@@ -1,0 +1,439 @@
+openapi: 3.1.0
+info:
+  title: Lemon API — Photos and private media
+  version: 0.1.0
+  description: |
+    Photo upload, ordering, removal and authenticated media reads (Phase 05).
+
+    - Uploads land in private quarantine as `pending`. Only an audited manual
+      review moves a photo to `approved`; nothing is auto-approved.
+    - The server decodes the bytes to decide the format. The client MIME type and
+      filename are ignored. All EXIF/XMP/IPTC metadata (including GPS) is removed
+      and orientation is applied before anything is stored.
+    - There are no public or permanent media URLs. Every media read goes through
+      `GET /v1/media/{assetId}/{variant}`, which rechecks access on each request.
+    - Errors use `{ error: { code, message, retryable, ... }, requestId }`.
+servers:
+  - url: http://localhost:3000
+security:
+  - firebaseIdToken: []
+
+paths:
+  /v1/me/photos:
+    post:
+      operationId: uploadPhoto
+      summary: Upload one photo into private quarantine
+      description: |
+        One image per request, at most `MEDIA_MAX_BYTES` (default 10 MB). Accepted
+        formats: JPEG, PNG, WebP (still images). Dimensions: at least 320 px on the
+        short side, at most 8000 px on the long side, at most 40 megapixels.
+        A user may have at most 6 non-rejected photos.
+
+        Idempotent per `Idempotency-Key`: repeating a completed upload with the same
+        key and the same bytes returns the original photo (200) instead of creating
+        another. A key reused with different bytes is a 409.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              additionalProperties: false
+              properties:
+                photo:
+                  type: string
+                  format: binary
+                  description: The image file. No other form fields are accepted.
+      responses:
+        '201':
+          description: Stored in quarantine and awaiting review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadEnvelope'
+        '200':
+          description: Duplicate retry of a completed upload; returns the original photo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadEnvelope'
+        '400':
+          description: '`IDEMPOTENCY_KEY_REQUIRED`, `FILE_REQUIRED` or `INVALID_MULTIPART`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            `IDEMPOTENCY_KEY_REUSED` (key already used for different bytes, or for a photo
+            since removed) or `UPLOAD_IN_PROGRESS` (retryable; the first attempt is still running)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '413':
+          description: '`PAYLOAD_TOO_LARGE`, with `maxBytes`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '415':
+          description: |
+            `UNSUPPORTED_MEDIA_TYPE`, with `detectedFormat` (`heic`, `avif`, `gif`, `unknown`,
+            or the format of an animated image with `animated: true`) and `acceptedFormats`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                error:
+                  code: UNSUPPORTED_MEDIA_TYPE
+                  message: HEIC photos are not supported yet. Please choose a JPEG, PNG or WebP photo.
+                  detectedFormat: heic
+                  acceptedFormats: [jpeg, png, webp]
+                  retryable: false
+                requestId: 3f0c…
+        '422':
+          description: |
+            `INVALID_IMAGE` (corrupt or unreadable), `IMAGE_DIMENSIONS_INVALID` (with `reason`:
+            `too_small` | `too_large` | `too_many_pixels`, `width`, `height`, `limits`) or
+            `PHOTO_LIMIT_REACHED` (with `maxPhotos`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: '`STORAGE_UNAVAILABLE` or `PHOTO_SET_BUSY` (both retryable with the same key)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    get:
+      operationId: listMyPhotos
+      summary: The caller's photos
+      description: |
+        Non-rejected photos in display order, followed by rejected photos (oldest first)
+        so the editor can show the reason and offer a replacement. Removed photos are omitted.
+      responses:
+        '200':
+          description: Photos and the photo-set revision
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    required: [photos, revision, minPhotos, maxPhotos]
+                    properties:
+                      photos:
+                        type: array
+                        items: { $ref: '#/components/schemas/OwnerPhoto' }
+                      revision: { type: integer, minimum: 1 }
+                      minPhotos: { type: integer, const: 3 }
+                      maxPhotos: { type: integer, const: 6 }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/photos/order:
+    patch:
+      operationId: reorderPhotos
+      summary: Replace the photo order
+      description: |
+        `photoIds` must list every current non-rejected photo exactly once (processing,
+        pending and approved). Compare-and-set on `expectedRevision`. Uploads, removals and
+        rejections also change the revision, so a stale device gets a 409 and should refresh.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedRevision, photoIds]
+              properties:
+                expectedRevision: { type: integer }
+                photoIds:
+                  type: array
+                  maxItems: 6
+                  items: { type: string }
+      responses:
+        '200':
+          description: New order saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    required: [revision, photoIds]
+                    properties:
+                      revision: { type: integer }
+                      photoIds: { type: array, items: { type: string } }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`REVISION_CONFLICT`, with `currentRevision` (retryable after refresh)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: |
+            `VALIDATION_ERROR` (malformed body, with `fieldErrors`) or `PHOTO_SET_MISMATCH`
+            (IDs missing, duplicated or not the caller's current photos; with `missing` and `unexpected`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /v1/me/photos/{photoId}:
+    delete:
+      operationId: deletePhoto
+      summary: Remove one of the caller's photos
+      description: |
+        Owner only; any other caller gets 404. Access to the photo ends immediately,
+        stored objects are removed now or by the retrying cleanup worker, and profile
+        readiness is recomputed (removing an approved photo below 3 makes the profile not ready).
+      parameters:
+        - name: photoId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    required: [deleted, revision]
+                    properties:
+                      deleted: { type: boolean, const: true }
+                      revision: { type: integer }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
+        '404':
+          description: '`PHOTO_NOT_FOUND` (missing, already removed, or not the caller''s), or `NOT_FOUND` (no account)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /v1/media/{assetId}/{variant}:
+    get:
+      operationId: getMedia
+      summary: Stream a photo variant
+      description: |
+        Access is rechecked on every request, including conditional revalidation:
+
+        - the owner may read their own `pending`, `approved` and `rejected` photos;
+        - anyone else may read only `approved` photos of an owner who is `active` and
+          profile-ready, and only while the viewer is `active` and profile-ready too.
+
+        Only `thumb` and `display` exist. Originals and quarantine objects are never served.
+        Responses are `Cache-Control: private, no-cache` with an `ETag`; send `If-None-Match`
+        to get a 304 after the access check.
+      parameters:
+        - name: assetId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: variant
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [thumb, display]
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: WebP bytes (no metadata). Flutter decodes WebP natively on iOS and Android.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string, const: 'private, no-cache' } }
+            X-Content-Type-Options: { schema: { type: string, const: nosniff } }
+          content:
+            image/webp:
+              schema: { type: string, format: binary }
+        '304':
+          description: Not modified (access was rechecked)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403':
+          description: |
+            `ACCOUNT_NOT_ELIGIBLE` (viewer is not active and profile-ready) or
+            `ACCOUNT_RESTRICTED` (viewer's account is restricted)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: |
+            `MEDIA_UNAVAILABLE`: unknown asset or variant, or not visible to this viewer
+            (pending, rejected, removed, or owner not eligible). Deliberately indistinguishable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: '`STORAGE_UNAVAILABLE` (retryable)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+components:
+  securitySchemes:
+    firebaseIdToken:
+      type: http
+      scheme: bearer
+      description: Firebase Auth ID token. The server never trusts a client-supplied user ID.
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated key (e.g. a UUID) reused on every retry of the same upload.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{8,128}$'
+
+  responses:
+    Unauthenticated:
+      description: '`UNAUTHENTICATED` or `TOKEN_REVOKED`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    AccountRestricted:
+      description: '`ACCOUNT_RESTRICTED`: the account is suspended or being deleted'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: '`NOT_FOUND`: no app account for this identity (call `POST /v1/me/bootstrap`)'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+    Meta:
+      type: object
+      required: [requestId]
+      properties:
+        requestId: { type: string }
+
+    UploadEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [id, state, order, revision]
+          properties:
+            id: { type: string, description: Server-generated asset ID }
+            state: { $ref: '#/components/schemas/PhotoState' }
+            order: { type: integer, minimum: 0 }
+            revision: { type: integer, description: Photo-set revision after this upload }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    PhotoState:
+      type: string
+      enum: [processing, pending, approved, rejected]
+
+    OwnerPhoto:
+      type: object
+      required: [id, state, order, width, height, contentVersion, rejectionReason, media, createdAt]
+      properties:
+        id: { type: string }
+        state: { $ref: '#/components/schemas/PhotoState' }
+        order: { type: integer }
+        width: { type: integer, description: Pixels after orientation is applied }
+        height: { type: integer }
+        contentVersion: { type: integer, description: Referenced by likes }
+        rejectionReason:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/RejectionReason'
+        media:
+          description: Authenticated media paths; null while processing
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/MediaPaths'
+        createdAt: { type: string, format: date-time }
+
+    PublicPhoto:
+      description: Shape other viewers will receive once profiles embed photos (approved only).
+      type: object
+      required: [id, order, width, height, contentVersion, media]
+      properties:
+        id: { type: string }
+        order: { type: integer }
+        width: { type: integer }
+        height: { type: integer }
+        contentVersion: { type: integer }
+        media: { $ref: '#/components/schemas/MediaPaths' }
+
+    MediaPaths:
+      type: object
+      required: [thumb, display]
+      properties:
+        thumb: { type: string, example: /v1/media/7b1e…/thumb }
+        display: { type: string, example: /v1/media/7b1e…/display }
+
+    RejectionReason:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [face_not_clear, multiple_people, low_quality, contact_details, community_guidelines]
+          description: Map to a localized string in the client; `message` is the English default.
+        message: { type: string }
+
+    ErrorEnvelope:
+      type: object
+      required: [error, requestId]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable]
+          additionalProperties: true
+          properties:
+            code:
+              type: string
+              enum:
+                - UNAUTHENTICATED
+                - TOKEN_REVOKED
+                - NOT_FOUND
+                - ACCOUNT_RESTRICTED
+                - ACCOUNT_NOT_ELIGIBLE
+                - IDEMPOTENCY_KEY_REQUIRED
+                - IDEMPOTENCY_KEY_REUSED
+                - UPLOAD_IN_PROGRESS
+                - FILE_REQUIRED
+                - INVALID_MULTIPART
+                - PAYLOAD_TOO_LARGE
+                - UNSUPPORTED_MEDIA_TYPE
+                - INVALID_IMAGE
+                - IMAGE_DIMENSIONS_INVALID
+                - PHOTO_LIMIT_REACHED
+                - PHOTO_SET_BUSY
+                - PHOTO_NOT_FOUND
+                - PHOTO_SET_MISMATCH
+                - REVISION_CONFLICT
+                - VALIDATION_ERROR
+                - MEDIA_UNAVAILABLE
+                - STORAGE_UNAVAILABLE
+                - INTERNAL_ERROR
+            message: { type: string }
+            retryable: { type: boolean }
+        requestId: { type: string }

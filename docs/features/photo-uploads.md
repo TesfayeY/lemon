@@ -91,4 +91,39 @@ Follow the patterns in `apps/api/test/profiles.test.ts` (in-memory Db fake plus 
 
 ## Status
 
-_Not started._
+**Implemented, pending review** (2026-10-26). Rebased onto `main` after #4 merged profiles/preferences. `tsc --noEmit` and `npm test` pass (195 tests, 73 of them new in `test/media.test.ts` and `test/media-processing.test.ts`), and every file this branch adds or changes passes `oxlint --deny-warnings`. Also checked end to end against the local MongoDB replica set with `LocalMediaStorage`, the real `scripts/review-photos.ts` and the cleanup worker. Firebase token verification was stubbed for that run because the Firebase CLI wasn't on PATH.
+
+### Decisions made inside the brief (please confirm)
+
+- `Idempotency-Key` is **required** on upload (`400 IDEMPOTENCY_KEY_REQUIRED`). Same key + same bytes → `200` with the original photo. Same key + different bytes → `409 IDEMPOTENCY_KEY_REUSED`.
+- The raw upload is never stored. The quarantine object (`originalPrivateKey`) is the orientation-normalized, metadata-free full-size re-encode, so GPS never reaches disk.
+- The private master is JPEG (quality 90). The served `thumb` and `display` variants are **WebP**, which is smaller than JPEG at similar quality and decoded natively by Flutter (AVIF would need a plugin). Transparent PNGs are flattened onto white. Variants are fit-inside without upscaling: `thumb` ≤ 320×640, `display` ≤ 1080×2160. Animated images get a 415.
+- The 6-photo limit holds under concurrency without transactions: insert as `processing`, then compare-and-set the `photoSets.revision`; losers roll back and recount. Uploads, deletes, rejections and failed uploads all bump the revision.
+- Deleting keeps a `deleted` tombstone (objects purged, `objectsPurgedAt` set). That way a stale retry can't resurrect the photo, and likes can later show "This profile item changed". Failed uploads are removed entirely once their objects are purged.
+- Owners can view their own `pending`/`rejected` photos (needed for the editor). Others only see `approved` photos, and only while both owner and viewer are `active` + `profileReady`.
+- Media responses use `Cache-Control: private, no-cache` plus an `ETag`. A `304` is returned only after the access check passes, so revocation is immediate.
+- Rejection reason codes: `face_not_clear`, `multiple_people`, `low_quality`, `contact_details`, `community_guidelines`. The API returns `{ code, message }`, and Flutter should map `code` to a localization key.
+
+### Needs a change outside this brief's files (not made)
+
+1. **Run the cleanup worker.** `src/workers/media-cleanup.ts` exports `runMediaCleanup()` and runs standalone (`npx tsx src/workers/media-cleanup.ts [--once]`), but nothing starts it yet. It needs the shared worker entry point (D-06) or a `package.json` script. Until then, delete purges objects inline and the worker only catches failures and crashed uploads.
+2. **Index for worker queries.** The cleanup scans `{ state, objectsPurgedAt }` and `{ state, createdAt }`, which the allowed `{ ownerId, state, order }` index doesn't cover. Suggest adding `photos: { state: 1, objectsPurgedAt: 1 }` before data grows.
+3. **Profiles integration (profiles owner).** `toPublicPhotoDTO()` is ready for the public profile and preview DTOs. Load only `approved` photos sorted by `order`.
+
+### Follow-ups (out of scope here)
+
+- Upload rate limit: the spec proposes 10 upload attempts per hour per account.
+- Phase 15 (account deletion): erase the user's `photos` records, including `deleted` ones (metadata only, no images), plus `photoSets` and any remaining objects. Retention period depends on P-06.
+- Phase 13: write the review state change and its `auditLog` entry in one Mongo transaction, and move review behind the role-checked admin API.
+- P-04 is still open: `FirebaseMediaStorage` is a stub that throws.
+- Pre-existing on `main`: `npm run lint` fails on two unused imports in profiles-owned files (`findCity` in `src/modules/profiles/validation.ts`, `beforeEach` in `test/profiles.test.ts`). Not touched here because the profiles owner owns them. Also, `tsconfig.json` doesn't cover `test/` or `scripts/`.
+
+### Using it locally
+
+```bash
+cd apps/api
+npx tsx --env-file=.env ../../scripts/review-photos.ts list            # pending photos + local file to view
+npx tsx --env-file=.env ../../scripts/review-photos.ts approve <id> --actor <you>
+npx tsx --env-file=.env ../../scripts/review-photos.ts reject <id> --actor <you> --reason low_quality
+npx tsx --env-file=.env src/workers/media-cleanup.ts --once
+```

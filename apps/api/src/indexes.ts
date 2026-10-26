@@ -11,6 +11,11 @@ export async function ensureIndexes(db: Db): Promise<void> {
     db.collection('profiles').createIndex({ userId: 1 }, { unique: true }),
     db.collection('preferences').createIndex({ userId: 1 }, { unique: true }),
     db.collection('promptAnswers').createIndex({ ownerId: 1, promptId: 1 }, { unique: true }),
+    db.collection('photos').createIndex({ ownerId: 1, state: 1, order: 1 }),
+    db.collection('photos').createIndex(
+      { ownerId: 1, idempotencyKey: 1 },
+      { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
+    ),
   ]);
 }
 
