@@ -5,7 +5,7 @@ Lemon uses **GitHub Flow**: `main` is always releasable, and every change lands 
 ## Rules
 
 - Never commit directly to `main`. Branch from the latest `main` for every task.
-- One branch = one phase or one focused change. Don't mix unrelated work.
+- One branch = one feature or one focused change. Don't mix unrelated work.
 - Create a branch when work starts, not in advance — pre-made branches drift from `main`.
 - Keep branches short-lived; rebase on `main` (`git pull --rebase origin main`) before opening a PR.
 - Merge with **squash merge** so `main` has one commit per branch, then delete the branch.
@@ -13,11 +13,11 @@ Lemon uses **GitHub Flow**: `main` is always releasable, and every change lands 
 
 ## Branch names
 
-`<type>/<short-kebab-description>`, with the phase number for roadmap work.
+`<type>/<short-kebab-feature-name>`. Name the feature, never the phase number.
 
 | Type | Use for | Example |
 |------|---------|---------|
-| `feat/` | New phase or user-facing feature | `feat/phase-05-private-media` |
+| `feat/` | New user-facing feature | `feat/photo-uploads` |
 | `fix/` | Bug fix | `fix/onboarding-leap-day-age` |
 | `chore/` | Tooling, deps, config | `chore/upgrade-firebase-admin` |
 | `docs/` | Documentation only | `docs/api-contracts-profiles` |
@@ -25,29 +25,29 @@ Lemon uses **GitHub Flow**: `main` is always releasable, and every change lands 
 | `test/` | Tests only | `test/like-quota-concurrency` |
 | `hotfix/` | Urgent fix for a released build | `hotfix/chat-room-access` |
 
-## Planned roadmap branches
+## Feature branches
 
-Create each from `main` when its phase starts (see `docs/progress.md`):
+Branches are named for the **feature**, not the roadmap phase. A phase in `docs/progress.md` may span several feature branches, and one feature branch may finish work across phases. Create each from `main` when work on it starts:
 
-| Phase | Branch |
-|-------|--------|
-| 04 | `feat/phase-04-profiles-preferences` |
-| 05 | `feat/phase-05-private-media` |
-| 06 | `feat/phase-06-onboarding-profile-editing` |
-| 07 | `feat/phase-07-discovery` |
-| 08 | `feat/phase-08-likes-quota` |
-| 09 | `feat/phase-09-matches-outbox` |
-| 10 | `feat/phase-10-firestore-rooms` |
-| 11 | `feat/phase-11-messaging` |
-| 12 | `feat/phase-12-block-unmatch-report` |
-| 13 | `feat/phase-13-moderation-admin` |
-| 14 | `feat/phase-14-notifications` |
-| 15 | `feat/phase-15-account-lifecycle` |
-| 16 | `feat/phase-16-l10n-a11y-polish` |
-| 17 | `test/phase-17-race-reconciliation-perf` |
-| 18 | `chore/phase-18-beta-acceptance` |
+| Feature | Branch |
+|---------|--------|
+| Profiles, prompts, preferences, catalogs | `feat/profiles-preferences` |
+| Photo upload and private media | `feat/photo-uploads` |
+| Photo and content moderation queue | `feat/content-moderation` |
+| Onboarding flow (Flutter) | `feat/onboarding-flow` |
+| Profile editing (Flutter) | `feat/profile-editing` |
+| Discovery feed | `feat/discovery` |
+| Likes and daily quota | `feat/likes` |
+| Matches | `feat/matches` |
+| Chat rooms and messaging | `feat/chat` |
+| Block, unmatch, report | `feat/safety-actions` |
+| Admin moderation tools | `feat/admin-moderation` |
+| Push notifications | `feat/notifications` |
+| Pause and account deletion | `feat/account-lifecycle` |
+| Localization and accessibility | `feat/localization-accessibility` |
+| Race and performance tests | `test/race-conditions` |
 
-A large phase may be split into stacked sub-branches, e.g. `feat/phase-07-discovery-api` then `feat/phase-07-discovery-ui`.
+Split a large feature into smaller branches that each merge on their own, e.g. `feat/discovery-api` then `feat/discovery-ui`.
 
 ## Commits
 
@@ -70,5 +70,5 @@ Tag releases on `main` with semantic versions (`v0.1.0`, `v0.2.0`, …). Hotfixe
 ```bash
 git switch main
 git pull --rebase origin main   # once a remote exists
-git switch -c feat/phase-05-private-media
+git switch -c feat/photo-uploads
 ```
