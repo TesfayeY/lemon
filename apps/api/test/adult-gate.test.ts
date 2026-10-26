@@ -14,8 +14,7 @@ describe('parseBirthDate', () => {
 
   it('rejects future dates', () => {
     const result = parseBirthDate('2099-01-01');
-    expect(result.valid).toBe(false);
-    if (!result.valid) expect(result.reason).toContain('future');
+    expect(result).toMatchObject({ valid: false, reason: expect.stringContaining('future') });
   });
 
   it('rejects impossible calendar date (Feb 30)', () => {

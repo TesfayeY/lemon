@@ -3,7 +3,7 @@ import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { createAuthRoutes } from '../src/modules/auth/routes.js';
 import type { Auth, DecodedIdToken } from 'firebase-admin/auth';
-import type { Db, Collection } from 'mongodb';
+import type { Db } from 'mongodb';
 
 // Mock Firebase Auth
 function createMockAuth(overrides: Partial<Auth> = {}): Auth {

@@ -8,6 +8,10 @@ echo "=== TypeScript type check ==="
 npx tsc --noEmit
 
 echo ""
+echo "=== Lint ==="
+npm run lint
+
+echo ""
 echo "=== Unit & integration tests ==="
 npx vitest run
 

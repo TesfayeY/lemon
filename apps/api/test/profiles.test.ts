@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import type { Auth } from 'firebase-admin/auth';
 import { buildApp, createInMemoryDb, createMultiUserAuth, withInsertBarrier } from './support.js';

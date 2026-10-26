@@ -7,6 +7,7 @@ import { createAuthRoutes } from './modules/auth/routes.js';
 import { createProfileRoutes } from './modules/profiles/routes.js';
 import { createPreferencesRoutes } from './modules/preferences/routes.js';
 import { createCatalogRoutes } from './modules/catalogs/routes.js';
+import { createMediaRoutes } from './modules/media/routes.js';
 
 async function main() {
   const config = loadConfig();
@@ -30,6 +31,7 @@ async function main() {
       createProfileRoutes(db, auth),
       createPreferencesRoutes(db, auth),
       createCatalogRoutes(),
+      createMediaRoutes(db, auth, config),
     ],
   });
 

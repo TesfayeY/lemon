@@ -10,6 +10,10 @@ const envSchema = z.object({
   FIREBASE_PROJECT_ID: z.string().min(1),
   FIRESTORE_EMULATOR_HOST: z.string().optional(),
   FIREBASE_AUTH_EMULATOR_HOST: z.string().optional(),
+
+  // Media
+  MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  MEDIA_LOCAL_DIR: z.string().min(1).default('.local-media'),
 });
 
 export type Env = z.infer<typeof envSchema>;

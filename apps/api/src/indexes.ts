@@ -13,6 +13,11 @@ export async function ensureIndexes(db: Db): Promise<void> {
     db.collection('promptAnswers').createIndex({ ownerId: 1, promptId: 1 }, { unique: true }),
     // One answer per slot caps answers per owner atomically, even under concurrent inserts
     db.collection('promptAnswers').createIndex({ ownerId: 1, slot: 1 }, { unique: true }),
+    db.collection('photos').createIndex({ ownerId: 1, state: 1, order: 1 }),
+    db.collection('photos').createIndex(
+      { ownerId: 1, idempotencyKey: 1 },
+      { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
+    ),
   ]);
 }
 

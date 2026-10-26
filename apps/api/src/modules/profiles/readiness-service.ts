@@ -21,7 +21,7 @@ export async function evaluateReadiness(db: Db, user: UserDocument): Promise<Rea
 
   return checkReadiness(user, profile ?? createEmptyProfile(user._id), {
     interests: prefs?.acceptedGenderCategories.length ?? 0,
-    approvedPhotos: 0, // Photos not yet implemented — Phase 05
+    approvedPhotos: await db.collection('photos').countDocuments({ ownerId: user._id, state: 'approved' }),
     approvedAnswers,
   });
 }

@@ -45,3 +45,9 @@ coverage/
 
 # Logs
 *.log
+
+# Firebase emulator logs
+*-debug.log
+
+# Local media storage (MEDIA_LOCAL_DIR)
+.local-media*/
