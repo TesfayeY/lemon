@@ -12,21 +12,21 @@ const docs = buildSeedDocuments();
 
 describe('Fictional seed profiles', () => {
   it('pass the same validation real edits do', () => {
-    for (const p of docs.profiles) {
-      expect([
-        validateDisplayName(p.displayName), validateGenderIdentity(p.genderIdentity),
-        validateIntention(p.intention), validateCity(p.cityId), validateBio(p.bio),
-        validateLanguages(p.languages), validateOptionalText(p.occupation, 'occupation'),
-      ].filter(Boolean), p.userId).toEqual([]);
-    }
+    // Tag each error with its profile so a failure names the offending seed
+    const errors = docs.profiles.flatMap(p => [
+      validateDisplayName(p.displayName), validateGenderIdentity(p.genderIdentity),
+      validateIntention(p.intention), validateCity(p.cityId), validateBio(p.bio),
+      validateLanguages(p.languages), validateOptionalText(p.occupation, 'occupation'),
+    ].filter(Boolean).map(err => ({ userId: p.userId, ...err })));
+    expect(errors).toEqual([]);
   });
 
   it('are all adults with valid birth dates', () => {
-    for (const u of docs.users) {
+    const invalid = docs.users.filter(u => {
       const parsed = parseBirthDate(u.birthDate!);
-      expect(parsed.valid, u._id).toBe(true);
-      if (parsed.valid) expect(isAdultEligible(parsed.date), u._id).toBe(true);
-    }
+      return !parsed.valid || !isAdultEligible(parsed.date);
+    });
+    expect(invalid.map(u => u._id)).toEqual([]);
   });
 
   it('have valid preferences', () => {

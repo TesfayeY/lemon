@@ -19,7 +19,13 @@
     ],
     "typescript/no-explicit-any": "error",
     "no-underscore-dangle": "off",
-    "vitest/require-mock-type-parameters": "off"
+    "vitest/require-mock-type-parameters": "off",
+    "vitest/expect-expect": [
+      "error",
+      {
+        "assertFunctionNames": ["expect", "expectContract"]
+      }
+    ]
   },
   "ignorePatterns": [
     "dist/**"

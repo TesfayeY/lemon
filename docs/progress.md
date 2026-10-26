@@ -101,6 +101,5 @@ Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open
 - P-03: confirm which sensitive fields (religion, family plans, lifestyle) ship at launch
 - Languages catalog is a proposal; needs owner review
 - API route tests use an in-memory collection stand-in; real-Mongo race tests are Phase 17
-- `npm run lint` has no `eslint.config.*` yet
 
-## Total: 179 tests passing (149 API + 30 Flutter)
+## Total: 268 tests passing (238 API + 30 Flutter)
