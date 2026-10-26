@@ -13,6 +13,7 @@ import {
 import { toSelfProfileDTO, toPublicProfileDTO } from './dto.js';
 import { checkReadiness } from './readiness.js';
 import { findCity } from '../catalogs/data.js';
+import { isDuplicateKeyError } from '../../indexes.js';
 
 export function createProfileRoutes(db: Db, auth: Auth) {
   const router = Router();
@@ -63,7 +64,13 @@ export function createProfileRoutes(db: Db, auth: Auth) {
     if (!profile) {
       // Auto-create empty profile on first edit
       profile = createEmptyProfile(user._id);
-      await profiles.insertOne(profile);
+      try {
+        await profiles.insertOne(profile);
+      } catch (err: unknown) {
+        // Concurrent first edit created it — use the stored profile
+        if (!isDuplicateKeyError(err)) throw err;
+        profile = (await profiles.findOne({ userId: user._id }))!;
+      }
     }
 
     const body = req.body as Record<string, unknown>;

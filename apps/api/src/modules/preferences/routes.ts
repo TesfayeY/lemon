@@ -5,6 +5,7 @@ import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middlew
 import type { UserDocument } from '../auth/account.js';
 import { createDefaultPreferences, type PreferencesDocument, type LocationScope } from './schema.js';
 import { isValidGenderId } from '../catalogs/data.js';
+import { isDuplicateKeyError } from '../../indexes.js';
 
 const VALID_SCOPES: LocationScope[] = ['city', 'state', 'nationwide'];
 
@@ -13,6 +14,20 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
   const requireAuth = createAuthMiddleware(auth);
   const users = db.collection<UserDocument>('users');
   const preferences = db.collection<PreferencesDocument>('preferences');
+
+  /** Fetch preferences, creating defaults on first access (race-safe via unique userId index) */
+  async function findOrCreatePreferences(userId: string): Promise<PreferencesDocument> {
+    const existing = await preferences.findOne({ userId });
+    if (existing) return existing;
+    const prefs = createDefaultPreferences(userId);
+    try {
+      await preferences.insertOne(prefs);
+      return prefs;
+    } catch (err: unknown) {
+      if (!isDuplicateKeyError(err)) throw err;
+      return (await preferences.findOne({ userId }))!;
+    }
+  }
 
   /** GET /v1/me/preferences */
   router.get('/v1/me/preferences', requireAuth, async (req: Request, res: Response) => {
@@ -26,11 +41,7 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    let prefs = await preferences.findOne({ userId: user._id });
-    if (!prefs) {
-      prefs = createDefaultPreferences(user._id);
-      await preferences.insertOne(prefs);
-    }
+    const prefs = await findOrCreatePreferences(user._id);
 
     res.json({
       data: {
@@ -57,11 +68,7 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    let prefs = await preferences.findOne({ userId: user._id });
-    if (!prefs) {
-      prefs = createDefaultPreferences(user._id);
-      await preferences.insertOne(prefs);
-    }
+    const prefs = await findOrCreatePreferences(user._id);
 
     const body = req.body as Record<string, unknown>;
     const updates: Record<string, unknown> = {};
