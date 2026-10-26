@@ -6,6 +6,7 @@ import type { UserDocument } from '../auth/account.js';
 import { createDefaultPreferences, type PreferencesDocument, type LocationScope } from './schema.js';
 import { isValidGenderId } from '../catalogs/data.js';
 import { isDuplicateKeyError } from '../../indexes.js';
+import { recomputeReadiness } from '../profiles/readiness-service.js';
 
 const VALID_SCOPES: LocationScope[] = ['city', 'state', 'nationwide'];
 
@@ -14,6 +15,18 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
   const requireAuth = createAuthMiddleware(auth);
   const users = db.collection<UserDocument>('users');
   const preferences = db.collection<PreferencesDocument>('preferences');
+
+  function sendRevisionConflict(req: Request, res: Response, currentRevision: number) {
+    res.status(409).json({
+      error: {
+        code: 'REVISION_CONFLICT',
+        message: 'Preferences have been modified. Please refresh and try again.',
+        currentRevision,
+        retryable: true,
+      },
+      requestId: req.requestId,
+    });
+  }
 
   /** Fetch preferences, creating defaults on first access (race-safe via unique userId index) */
   async function findOrCreatePreferences(userId: string): Promise<PreferencesDocument> {
@@ -71,6 +84,26 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
     const prefs = await findOrCreatePreferences(user._id);
 
     const body = req.body as Record<string, unknown>;
+
+    // Every edit must name the revision it was based on (two-device safety)
+    const expectedRevision = body['expectedRevision'];
+    if (typeof expectedRevision !== 'number' || !Number.isInteger(expectedRevision)) {
+      res.status(422).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid fields',
+          fieldErrors: [{ field: 'expectedRevision', message: 'Required integer revision' }],
+          retryable: false,
+        },
+        requestId: req.requestId,
+      });
+      return;
+    }
+    if (expectedRevision !== prefs.revision) {
+      sendRevisionConflict(req, res, prefs.revision);
+      return;
+    }
+
     const updates: Record<string, unknown> = {};
     const errors: { field: string; message: string }[] = [];
 
@@ -151,7 +184,19 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
     updates['updatedAt'] = new Date();
     updates['revision'] = prefs.revision + 1;
 
-    await preferences.updateOne({ _id: prefs._id }, { $set: updates });
+    // Compare-and-set on revision so concurrent edits cannot both win
+    const result = await preferences.updateOne(
+      { _id: prefs._id, revision: expectedRevision },
+      { $set: updates },
+    );
+    if (result.matchedCount === 0) {
+      const current = await preferences.findOne({ _id: prefs._id });
+      sendRevisionConflict(req, res, current?.revision ?? prefs.revision);
+      return;
+    }
+
+    // Interests, age range and location scope all affect who is eligible
+    await recomputeReadiness(db, user._id, { eligibilityChanged: true });
 
     res.json({
       data: { updated: Object.keys(updates).filter(k => k !== 'updatedAt' && k !== 'revision'), revision: updates['revision'] },

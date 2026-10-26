@@ -9,6 +9,9 @@ import type { Auth, DecodedIdToken } from 'firebase-admin/auth';
 import type { Db } from 'mongodb';
 import { graphemeLength, normalizeWhitespace } from '../src/modules/profiles/schema.js';
 import { checkReadiness } from '../src/modules/profiles/readiness.js';
+import { toPublicProfileDTO } from '../src/modules/profiles/dto.js';
+import { calculateAge } from '../src/modules/auth/adult-gate.js';
+import type { PromptAnswerDocument } from '../src/modules/profiles/schema.js';
 import type { UserDocument } from '../src/modules/auth/account.js';
 import type { ProfileDocument } from '../src/modules/profiles/schema.js';
 
@@ -23,6 +26,14 @@ function createMockAuth(): Auth {
     } as Partial<DecodedIdToken>),
   } as unknown as Auth;
 }
+
+// Mirrors src/indexes.ts so duplicate-key paths behave like MongoDB
+const UNIQUE_KEYS: Record<string, string[][]> = {
+  users: [['firebaseUid']],
+  profiles: [['userId']],
+  preferences: [['userId']],
+  promptAnswers: [['ownerId', 'promptId']],
+};
 
 function createInMemoryDb() {
   const collections = new Map<string, Map<string, Record<string, unknown>>>();
@@ -54,8 +65,9 @@ function createInMemoryDb() {
           }),
         })),
         insertOne: vi.fn(async (doc: Record<string, unknown>) => {
+          const uniqueKeys = [['_id'], ...(UNIQUE_KEYS[name] ?? [])];
           for (const existing of store.values()) {
-            if (doc['firebaseUid'] && existing['firebaseUid'] === doc['firebaseUid']) {
+            if (uniqueKeys.some(keys => keys.every(k => existing[k] === doc[k]))) {
               const err = new Error('duplicate key') as Error & { code: number };
               err.code = 11000;
               throw err;
@@ -68,13 +80,17 @@ function createInMemoryDb() {
           for (const [id, doc] of store.entries()) {
             const match = Object.entries(filter).every(([k, v]) => doc[k] === v);
             if (match) {
-              const setFields = (update as { $set?: Record<string, unknown> }).$set ?? {};
-              Object.assign(doc, setFields);
+              const { $set = {}, $inc = {} } = update as {
+                $set?: Record<string, unknown>;
+                $inc?: Record<string, number>;
+              };
+              Object.assign(doc, $set);
+              for (const [k, by] of Object.entries($inc)) doc[k] = ((doc[k] as number) ?? 0) + by;
               store.set(id, doc);
-              return { modifiedCount: 1 };
+              return { matchedCount: 1, modifiedCount: 1 };
             }
           }
-          return { modifiedCount: 0 };
+          return { matchedCount: 0, modifiedCount: 0 };
         }),
         deleteOne: vi.fn(async (filter: Record<string, unknown>) => {
           for (const [id, doc] of store.entries()) {
@@ -97,6 +113,17 @@ function createInMemoryDb() {
       };
     },
   } as unknown as Db;
+}
+
+/** Token "token-<name>" authenticates as Firebase UID "uid-<name>" */
+function createMultiUserAuth(): Auth {
+  return {
+    verifyIdToken: vi.fn(async (token: string) => ({
+      uid: `uid-${token.replace('token-', '')}`,
+      email: `${token}@example.com`,
+      email_verified: true,
+    })),
+  } as unknown as Auth;
 }
 
 function buildApp(auth?: Auth, db?: Db) {
@@ -184,7 +211,7 @@ describe('PATCH /v1/me/profile', () => {
     const res = await request(app)
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
-      .send({ displayName: 'ሰላም' });
+      .send({ expectedRevision: 1, displayName: 'ሰላም' });
 
     expect(res.status).toBe(200);
     expect(res.body.data.updated).toContain('displayName');
@@ -198,7 +225,7 @@ describe('PATCH /v1/me/profile', () => {
     const res = await request(app)
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
-      .send({ displayName: longName });
+      .send({ expectedRevision: 1, displayName: longName });
 
     expect(res.status).toBe(422);
   });
@@ -210,7 +237,7 @@ describe('PATCH /v1/me/profile', () => {
     const res = await request(app)
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
-      .send({ cityId: 'city-seattle-wa' });
+      .send({ expectedRevision: 1, cityId: 'city-seattle-wa' });
 
     expect(res.status).toBe(200);
     expect(res.body.data.updated).toContain('cityId');
@@ -223,7 +250,7 @@ describe('PATCH /v1/me/profile', () => {
     const res = await request(app)
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
-      .send({ cityId: 'city-nonexistent' });
+      .send({ expectedRevision: 1, cityId: 'city-nonexistent' });
 
     expect(res.status).toBe(422);
   });
@@ -235,7 +262,7 @@ describe('PATCH /v1/me/profile', () => {
     const res = await request(app)
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
-      .send({ genderIdentity: 'invalid' });
+      .send({ expectedRevision: 1, genderIdentity: 'invalid' });
 
     expect(res.status).toBe(422);
   });
@@ -248,7 +275,7 @@ describe('PATCH /v1/me/profile', () => {
     await request(app)
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
-      .send({ displayName: 'First' });
+      .send({ expectedRevision: 1, displayName: 'First' });
 
     // Stale revision
     const res = await request(app)
@@ -267,7 +294,7 @@ describe('PATCH /v1/me/profile', () => {
     const res = await request(app)
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
-      .send({ religionDisplay: 'private' });
+      .send({ expectedRevision: 1, religionDisplay: 'private' });
 
     expect(res.status).toBe(200);
   });
@@ -279,7 +306,7 @@ describe('PATCH /v1/me/profile', () => {
     const res = await request(app)
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
-      .send({ religionDisplay: 'maybe' });
+      .send({ expectedRevision: 1, religionDisplay: 'maybe' });
 
     expect(res.status).toBe(422);
   });
@@ -368,7 +395,7 @@ describe('PATCH /v1/me/preferences', () => {
     const res = await request(app)
       .patch('/v1/me/preferences')
       .set('Authorization', 'Bearer valid-token')
-      .send({ minAge: 22, maxAge: 35 });
+      .send({ expectedRevision: 1, minAge: 22, maxAge: 35 });
 
     expect(res.status).toBe(200);
     expect(res.body.data.updated).toContain('minAge');
@@ -382,7 +409,7 @@ describe('PATCH /v1/me/preferences', () => {
     const res = await request(app)
       .patch('/v1/me/preferences')
       .set('Authorization', 'Bearer valid-token')
-      .send({ minAge: 16 });
+      .send({ expectedRevision: 1, minAge: 16 });
 
     expect(res.status).toBe(422);
   });
@@ -394,7 +421,7 @@ describe('PATCH /v1/me/preferences', () => {
     const res = await request(app)
       .patch('/v1/me/preferences')
       .set('Authorization', 'Bearer valid-token')
-      .send({ minAge: 40, maxAge: 25 });
+      .send({ expectedRevision: 1, minAge: 40, maxAge: 25 });
 
     expect(res.status).toBe(422);
   });
@@ -406,7 +433,7 @@ describe('PATCH /v1/me/preferences', () => {
     const res = await request(app)
       .patch('/v1/me/preferences')
       .set('Authorization', 'Bearer valid-token')
-      .send({ acceptedGenderCategories: ['woman', 'nonbinary'] });
+      .send({ expectedRevision: 1, acceptedGenderCategories: ['woman', 'nonbinary'] });
 
     expect(res.status).toBe(200);
   });
@@ -418,7 +445,7 @@ describe('PATCH /v1/me/preferences', () => {
     const res = await request(app)
       .patch('/v1/me/preferences')
       .set('Authorization', 'Bearer valid-token')
-      .send({ acceptedGenderCategories: ['unicorn'] });
+      .send({ expectedRevision: 1, acceptedGenderCategories: ['unicorn'] });
 
     expect(res.status).toBe(422);
   });
@@ -430,7 +457,7 @@ describe('PATCH /v1/me/preferences', () => {
     const res = await request(app)
       .patch('/v1/me/preferences')
       .set('Authorization', 'Bearer valid-token')
-      .send({ locationScope: 'nationwide' });
+      .send({ expectedRevision: 1, locationScope: 'nationwide' });
 
     expect(res.status).toBe(200);
   });
@@ -442,7 +469,7 @@ describe('PATCH /v1/me/preferences', () => {
     const res = await request(app)
       .patch('/v1/me/preferences')
       .set('Authorization', 'Bearer valid-token')
-      .send({ locationScope: 'global' });
+      .send({ expectedRevision: 1, locationScope: 'global' });
 
     expect(res.status).toBe(422);
   });
@@ -458,6 +485,7 @@ describe('Public profile DTO', () => {
       .patch('/v1/me/profile')
       .set('Authorization', 'Bearer valid-token')
       .send({
+        expectedRevision: 1,
         displayName: 'Tesfa',
         genderIdentity: 'man',
         cityId: 'city-seattle-wa',
@@ -527,37 +555,37 @@ describe('checkReadiness', () => {
   };
 
   it('returns ready when all requirements are met', () => {
-    const result = checkReadiness(baseUser, baseProfile, 3, 3);
+    const result = checkReadiness(baseUser, baseProfile, { interests: 1, approvedPhotos: 3, approvedAnswers: 3 });
     expect(result.ready).toBe(true);
     expect(result.missing).toEqual([]);
   });
 
   it('reports missing email verification', () => {
-    const result = checkReadiness({ ...baseUser, emailVerified: false }, baseProfile, 3, 3);
+    const result = checkReadiness({ ...baseUser, emailVerified: false }, baseProfile, { interests: 1, approvedPhotos: 3, approvedAnswers: 3 });
     expect(result.ready).toBe(false);
     expect(result.missing).toContain('emailVerified');
   });
 
   it('reports missing photos', () => {
-    const result = checkReadiness(baseUser, baseProfile, 2, 3);
+    const result = checkReadiness(baseUser, baseProfile, { interests: 1, approvedPhotos: 2, approvedAnswers: 3 });
     expect(result.ready).toBe(false);
     expect(result.missing).toContain('photos');
   });
 
   it('reports missing prompt answers', () => {
-    const result = checkReadiness(baseUser, baseProfile, 3, 1);
+    const result = checkReadiness(baseUser, baseProfile, { interests: 1, approvedPhotos: 3, approvedAnswers: 1 });
     expect(result.ready).toBe(false);
     expect(result.missing).toContain('promptAnswers');
   });
 
   it('reports missing displayName', () => {
-    const result = checkReadiness(baseUser, { ...baseProfile, displayName: null }, 3, 3);
+    const result = checkReadiness(baseUser, { ...baseProfile, displayName: null }, { interests: 1, approvedPhotos: 3, approvedAnswers: 3 });
     expect(result.ready).toBe(false);
     expect(result.missing).toContain('displayName');
   });
 
   it('reports suspended account', () => {
-    const result = checkReadiness({ ...baseUser, accountStatus: 'suspended' as const }, baseProfile, 3, 3);
+    const result = checkReadiness({ ...baseUser, accountStatus: 'suspended' as const }, baseProfile, { interests: 1, approvedPhotos: 3, approvedAnswers: 3 });
     expect(result.ready).toBe(false);
     expect(result.missing).toContain('accountSuspended');
   });
@@ -566,10 +594,285 @@ describe('checkReadiness', () => {
     const result = checkReadiness(
       { ...baseUser, emailVerified: false, adultEligible: false },
       { ...baseProfile, displayName: null, cityId: null },
-      0,
-      0,
+      { interests: 0, approvedPhotos: 0, approvedAnswers: 0 },
     );
     expect(result.ready).toBe(false);
     expect(result.missing.length).toBeGreaterThanOrEqual(4);
+  });
+
+  const counts = { interests: 1, approvedPhotos: 3, approvedAnswers: 3 };
+  it.each([
+    ['adultEligible', { ...baseUser, adultEligible: false }, baseProfile, counts],
+    ['termsAccepted', { ...baseUser, agreements: { termsVersion: null, acceptedAt: null } }, baseProfile, counts],
+    ['genderIdentity', baseUser, { ...baseProfile, genderIdentity: null }, counts],
+    ['interests', baseUser, baseProfile, { ...counts, interests: 0 }],
+    ['location', baseUser, { ...baseProfile, cityId: null }, counts],
+    ['intention', baseUser, { ...baseProfile, intention: null }, counts],
+  ] as const)('reports missing %s', (key, user, profile, c) => {
+    const result = checkReadiness(user as UserDocument, profile as ProfileDocument, c);
+    expect(result.ready).toBe(false);
+    expect(result.missing).toEqual([key]);
+  });
+});
+
+describe('Revision safety (two devices)', () => {
+  it('requires expectedRevision on profile edits', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+
+    const res = await request(app)
+      .patch('/v1/me/profile')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ displayName: 'NoRevision' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.fieldErrors[0].field).toBe('expectedRevision');
+  });
+
+  it('lets the first device win and tells the second the current revision', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    const edit = (body: Record<string, unknown>) =>
+      request(app).patch('/v1/me/profile').set('Authorization', 'Bearer valid-token').send(body);
+
+    // Both devices loaded revision 1
+    const deviceA = await edit({ expectedRevision: 1, displayName: 'Phone' });
+    const deviceB = await edit({ expectedRevision: 1, displayName: 'Tablet' });
+
+    expect(deviceA.status).toBe(200);
+    expect(deviceA.body.data.revision).toBe(2);
+    expect(deviceB.status).toBe(409);
+    expect(deviceB.body.error.currentRevision).toBe(2);
+
+    // Device B refreshes and reapplies
+    const retry = await edit({ expectedRevision: 2, displayName: 'Tablet' });
+    expect(retry.status).toBe(200);
+
+    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer valid-token');
+    expect(preview.body.data.displayName).toBe('Tablet');
+    expect(preview.body.data.revision).toBe(3);
+  });
+
+  it('requires expectedRevision and rejects stale preference edits', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    const edit = (body: Record<string, unknown>) =>
+      request(app).patch('/v1/me/preferences').set('Authorization', 'Bearer valid-token').send(body);
+
+    expect((await edit({ minAge: 25 })).status).toBe(422);
+    expect((await edit({ expectedRevision: 1, minAge: 25 })).status).toBe(200);
+
+    const stale = await edit({ expectedRevision: 1, maxAge: 40 });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.currentRevision).toBe(2);
+  });
+
+  it('returns revision 1 from preview before the first edit', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+
+    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer valid-token');
+    expect(preview.status).toBe(200);
+    expect(preview.body.data.revision).toBe(1);
+  });
+});
+
+describe('Server-owned fields', () => {
+  const serverOwned = {
+    profileReady: true,
+    accountStatus: 'active',
+    role: 'admin',
+    revision: 99,
+    publishedRevision: 5,
+    state: 'approved',
+    guardVersion: 42,
+    userId: 'someone-else',
+  };
+
+  it('ignores readiness, status, role and revision fields on profile edits', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+
+    const res = await request(app)
+      .patch('/v1/me/profile')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ expectedRevision: 1, ...serverOwned });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('NO_UPDATES');
+
+    const me = await request(app).get('/v1/me').set('Authorization', 'Bearer valid-token');
+    expect(me.body.data.accountStatus).toBe('onboarding');
+    expect(me.body.data.profileReady).toBe(false);
+
+    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer valid-token');
+    expect(preview.body.data.revision).toBe(1);
+  });
+
+  it('ignores server-owned fields on preference edits', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+
+    const res = await request(app)
+      .patch('/v1/me/preferences')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ expectedRevision: 1, ...serverOwned });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('NO_UPDATES');
+  });
+
+  it('cannot set a prompt answer state or revision', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+
+    const res = await request(app)
+      .post('/v1/me/prompts')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ promptId: 'prompt-tradition', text: 'Coffee', state: 'rejected', publishedRevision: 9, ownerId: 'x' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.state).toBe('approved');
+  });
+});
+
+describe('Own-resource authorization', () => {
+  it('cannot delete another user\'s prompt answer', async () => {
+    const app = buildApp(createMultiUserAuth());
+    for (const t of ['token-alice', 'token-bob']) {
+      await request(app).post('/v1/me/bootstrap').set('Authorization', `Bearer ${t}`);
+    }
+
+    const created = await request(app)
+      .post('/v1/me/prompts')
+      .set('Authorization', 'Bearer token-alice')
+      .send({ promptId: 'prompt-tradition', text: 'Buna' });
+
+    const res = await request(app)
+      .delete(`/v1/me/prompts/${created.body.data.id}`)
+      .set('Authorization', 'Bearer token-bob');
+    expect(res.status).toBe(404);
+
+    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer token-alice');
+    expect(preview.body.data.promptAnswers).toHaveLength(1);
+  });
+
+  it('blocks viewers who are not active and ready from viewing profiles', async () => {
+    const app = buildApp(createMultiUserAuth());
+    await request(app).post('/v1/me/bootstrap').set('Authorization', 'Bearer token-alice');
+
+    const res = await request(app)
+      .get('/v1/profiles/any-user-id')
+      .set('Authorization', 'Bearer token-alice');
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('ACCOUNT_NOT_ELIGIBLE');
+  });
+});
+
+describe('Guard version', () => {
+  async function guardVersion(db: Db): Promise<number> {
+    const user = await db.collection('users').findOne({ firebaseUid: 'firebase-uid-1' });
+    return user!['guardVersion'] as number;
+  }
+
+  it('increments when eligibility-affecting fields change', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+    const start = await guardVersion(db);
+
+    await request(app).patch('/v1/me/profile').set('Authorization', 'Bearer valid-token')
+      .send({ expectedRevision: 1, bio: 'Loves injera' });
+    expect(await guardVersion(db)).toBe(start);
+
+    await request(app).patch('/v1/me/profile').set('Authorization', 'Bearer valid-token')
+      .send({ expectedRevision: 2, cityId: 'city-seattle-wa' });
+    expect(await guardVersion(db)).toBe(start + 1);
+
+    await request(app).patch('/v1/me/preferences').set('Authorization', 'Bearer valid-token')
+      .send({ expectedRevision: 1, acceptedGenderCategories: ['woman'] });
+    expect(await guardVersion(db)).toBe(start + 2);
+  });
+});
+
+describe('toPublicProfileDTO', () => {
+  const user: UserDocument = {
+    _id: 'u1',
+    firebaseUid: 'firebase-secret-uid',
+    accountStatus: 'active',
+    emailVerified: true,
+    birthDate: '1990-06-15',
+    adultEligible: true,
+    discoverPaused: false,
+    profileReady: true,
+    guardVersion: 7,
+    agreements: { termsVersion: '1.0', acceptedAt: new Date() },
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const profile: ProfileDocument = {
+    _id: 'u1',
+    userId: 'u1',
+    displayName: 'Selam',
+    genderIdentity: 'woman',
+    genderDisplay: 'private',
+    cityId: 'city-seattle-wa',
+    stateCode: 'WA',
+    countryCode: 'US',
+    intention: 'serious',
+    bio: 'Coffee first',
+    hometown: 'Asmara',
+    hometownDisplay: 'private',
+    occupation: 'Nurse',
+    occupationDisplay: 'public',
+    education: 'BSN',
+    educationDisplay: 'private',
+    height: 165,
+    heightDisplay: 'private',
+    languages: ['tigrinya'],
+    languagesDisplay: 'private',
+    religion: 'Orthodox',
+    religionDisplay: 'private',
+    revision: 4,
+    publishedRevision: 3,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const answers: PromptAnswerDocument[] = [
+    { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', text: 'Buna', state: 'approved', publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', text: 'Pending answer', state: 'pending', publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
+  ] as PromptAnswerDocument[];
+
+  const dto = toPublicProfileDTO(profile, user, answers);
+  const serialized = JSON.stringify(dto);
+
+  it('omits DOB, email, Firebase UID, status and moderation data', () => {
+    for (const key of ['birthDate', 'email', 'firebaseUid', 'accountStatus', 'guardVersion', 'agreements',
+      'emailVerified', 'adultEligible', 'profileReady', 'revision', 'publishedRevision', 'state', 'ownerId']) {
+      expect(dto).not.toHaveProperty(key);
+    }
+    expect(serialized).not.toContain('1990-06-15');
+    expect(serialized).not.toContain('firebase-secret-uid');
+  });
+
+  it('exposes calculated age instead of birth date', () => {
+    expect(dto.age).toBe(calculateAge(new Date('1990-06-15')));
+  });
+
+  it('hides fields whose visibility is private', () => {
+    expect(dto.genderIdentity).toBeNull();
+    expect(dto.hometown).toBeNull();
+    expect(dto.education).toBeNull();
+    expect(dto.height).toBeNull();
+    expect(dto.religion).toBeNull();
+    expect(dto.languages).toEqual([]);
+    expect(serialized).not.toContain('Asmara');
+    expect(serialized).not.toContain('Orthodox');
+    expect(dto.occupation).toBe('Nurse');
+  });
+
+  it('only publishes approved prompt answers', () => {
+    expect(dto.promptAnswers.map(a => a.id)).toEqual(['a1']);
+    expect(serialized).not.toContain('Pending answer');
   });
 });

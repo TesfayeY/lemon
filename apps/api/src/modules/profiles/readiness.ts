@@ -7,11 +7,12 @@
  * 3. Terms accepted (agreements.termsVersion not null)
  * 4. Display name set
  * 5. Gender identity set
- * 6. City/state set
- * 7. Intention set
- * 8. At least 3 approved photos (checked via count)
- * 9. At least 3 approved prompt answers (checked via count)
- * 10. No active safety restriction
+ * 6. At least one "interested in meeting" category (preferences)
+ * 7. City/state set
+ * 8. Intention set
+ * 9. At least 3 approved photos (checked via count)
+ * 10. At least 3 approved prompt answers (checked via count)
+ * 11. No active safety restriction
  */
 
 import type { UserDocument } from '../auth/account.js';
@@ -22,11 +23,16 @@ export interface ReadinessCheck {
   missing: string[];
 }
 
+export interface ReadinessCounts {
+  interests: number;
+  approvedPhotos: number;
+  approvedAnswers: number;
+}
+
 export function checkReadiness(
   user: UserDocument,
   profile: ProfileDocument,
-  approvedPhotoCount: number,
-  approvedAnswerCount: number,
+  counts: ReadinessCounts,
 ): ReadinessCheck {
   const missing: string[] = [];
 
@@ -35,10 +41,11 @@ export function checkReadiness(
   if (!user.agreements.termsVersion) missing.push('termsAccepted');
   if (!profile.displayName) missing.push('displayName');
   if (!profile.genderIdentity) missing.push('genderIdentity');
+  if (counts.interests < 1) missing.push('interests');
   if (!profile.cityId) missing.push('location');
   if (!profile.intention) missing.push('intention');
-  if (approvedPhotoCount < 3) missing.push('photos');
-  if (approvedAnswerCount < 3) missing.push('promptAnswers');
+  if (counts.approvedPhotos < 3) missing.push('photos');
+  if (counts.approvedAnswers < 3) missing.push('promptAnswers');
   if (user.accountStatus === 'suspended') missing.push('accountSuspended');
 
   return {

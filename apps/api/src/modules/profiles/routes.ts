@@ -3,7 +3,7 @@ import type { Db } from 'mongodb';
 import type { Auth } from 'firebase-admin/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
-import type { UserDocument } from '../auth/account.js';
+import { canInteract, type UserDocument } from '../auth/account.js';
 import { createEmptyProfile, normalizeWhitespace, type ProfileDocument, type PromptAnswerDocument } from './schema.js';
 import {
   validateDisplayName, validateGenderIdentity, validateIntention,
@@ -11,7 +11,7 @@ import {
   validatePromptId, validateHeight, type FieldError,
 } from './validation.js';
 import { toSelfProfileDTO, toPublicProfileDTO } from './dto.js';
-import { checkReadiness } from './readiness.js';
+import { recomputeReadiness } from './readiness-service.js';
 import { findCity } from '../catalogs/data.js';
 import { isDuplicateKeyError } from '../../indexes.js';
 
@@ -22,27 +22,31 @@ export function createProfileRoutes(db: Db, auth: Auth) {
   const profiles = db.collection<ProfileDocument>('profiles');
   const promptAnswers = db.collection<PromptAnswerDocument>('promptAnswers');
 
-  /** Helper to recompute and persist readiness */
-  async function updateReadiness(userId: string): Promise<boolean> {
-    const user = await users.findOne({ _id: userId });
-    const profile = await profiles.findOne({ userId });
-    if (!user || !profile) return false;
-
-    const photoCount = 0; // Photos not yet implemented — Phase 05
-    const answerCount = await promptAnswers.countDocuments({
-      ownerId: userId,
-      state: 'approved',
-    });
-
-    const { ready } = checkReadiness(user, profile, photoCount, answerCount);
-
-    if (user.profileReady !== ready) {
-      await users.updateOne(
-        { _id: userId },
-        { $set: { profileReady: ready, updatedAt: new Date() } },
-      );
+  /** Fetch own profile, creating an empty draft at revision 1 on first access */
+  async function findOrCreateProfile(userId: string): Promise<ProfileDocument> {
+    const existing = await profiles.findOne({ userId });
+    if (existing) return existing;
+    const profile = createEmptyProfile(userId);
+    try {
+      await profiles.insertOne(profile);
+      return profile;
+    } catch (err: unknown) {
+      // Concurrent first access created it — use the stored profile
+      if (!isDuplicateKeyError(err)) throw err;
+      return (await profiles.findOne({ userId }))!;
     }
-    return ready;
+  }
+
+  function sendRevisionConflict(req: Request, res: Response, currentRevision: number) {
+    res.status(409).json({
+      error: {
+        code: 'REVISION_CONFLICT',
+        message: 'Profile has been modified. Please refresh and try again.',
+        currentRevision,
+        retryable: true,
+      },
+      requestId: req.requestId,
+    });
   }
 
   /**
@@ -60,34 +64,26 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    let profile = await profiles.findOne({ userId: user._id });
-    if (!profile) {
-      // Auto-create empty profile on first edit
-      profile = createEmptyProfile(user._id);
-      try {
-        await profiles.insertOne(profile);
-      } catch (err: unknown) {
-        // Concurrent first edit created it — use the stored profile
-        if (!isDuplicateKeyError(err)) throw err;
-        profile = (await profiles.findOne({ userId: user._id }))!;
-      }
-    }
-
+    const profile = await findOrCreateProfile(user._id);
     const body = req.body as Record<string, unknown>;
 
-    // Check revision for conflict detection
-    if (body['expectedRevision'] !== undefined) {
-      if (body['expectedRevision'] !== profile.revision) {
-        res.status(409).json({
-          error: {
-            code: 'REVISION_CONFLICT',
-            message: 'Profile has been modified. Please refresh and try again.',
-            retryable: true,
-          },
-          requestId: req.requestId,
-        });
-        return;
-      }
+    // Every edit must name the revision it was based on (two-device safety)
+    const expectedRevision = body['expectedRevision'];
+    if (typeof expectedRevision !== 'number' || !Number.isInteger(expectedRevision)) {
+      res.status(422).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid fields',
+          fieldErrors: [{ field: 'expectedRevision', message: 'Required integer revision' }],
+          retryable: false,
+        },
+        requestId: req.requestId,
+      });
+      return;
+    }
+    if (expectedRevision !== profile.revision) {
+      sendRevisionConflict(req, res, profile.revision);
+      return;
     }
 
     const updates: Record<string, unknown> = {};
@@ -184,8 +180,19 @@ export function createProfileRoutes(db: Db, auth: Auth) {
     updates['updatedAt'] = new Date();
     updates['revision'] = profile.revision + 1;
 
-    await profiles.updateOne({ _id: profile._id }, { $set: updates });
-    await updateReadiness(user._id);
+    // Compare-and-set on revision so concurrent edits cannot both win
+    const result = await profiles.updateOne(
+      { _id: profile._id, revision: expectedRevision },
+      { $set: updates },
+    );
+    if (result.matchedCount === 0) {
+      const current = await profiles.findOne({ _id: profile._id });
+      sendRevisionConflict(req, res, current?.revision ?? profile.revision);
+      return;
+    }
+
+    const eligibilityChanged = 'genderIdentity' in updates || 'cityId' in updates;
+    await recomputeReadiness(db, user._id, { eligibilityChanged });
 
     res.json({
       data: { updated: Object.keys(updates).filter(k => k !== 'updatedAt' && k !== 'revision'), revision: updates['revision'] },
@@ -208,15 +215,7 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    const profile = await profiles.findOne({ userId: user._id });
-    if (!profile) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Profile not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
-
+    const profile = await findOrCreateProfile(user._id);
     const answers = await promptAnswers.find({ ownerId: user._id }).toArray();
     const selfDTO = toSelfProfileDTO(profile, user, answers);
 
@@ -292,8 +291,18 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       updatedAt: new Date(),
     };
 
-    await promptAnswers.insertOne(answer);
-    await updateReadiness(user._id);
+    try {
+      await promptAnswers.insertOne(answer);
+    } catch (err: unknown) {
+      // Concurrent duplicate submission hit the unique (ownerId, promptId) index
+      if (!isDuplicateKeyError(err)) throw err;
+      res.status(409).json({
+        error: { code: 'DUPLICATE_PROMPT', message: 'You already answered this prompt', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+    await recomputeReadiness(db, user._id);
 
     res.status(201).json({
       data: { id: answer._id, promptId: answer.promptId, state: answer.state },
@@ -329,7 +338,7 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    await updateReadiness(user._id);
+    await recomputeReadiness(db, user._id);
 
     res.json({
       data: { deleted: true },
@@ -343,6 +352,18 @@ export function createProfileRoutes(db: Db, auth: Auth) {
    * No global searchable directory.
    */
   router.get('/v1/profiles/:id', requireAuth, async (req: Request, res: Response) => {
+    const { uid } = req as AuthenticatedRequest;
+    const viewer = await users.findOne({ firebaseUid: uid });
+    // Only active, ready accounts may view other profiles (R-AUTH-08).
+    // Contextual eligibility (discovery/like/match) is added with Phase 07-09.
+    if (!viewer || !canInteract(viewer.accountStatus) || !viewer.profileReady) {
+      res.status(403).json({
+        error: { code: 'ACCOUNT_NOT_ELIGIBLE', message: 'Complete your profile to view others', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
     const targetUserId = req.params['id'];
 
     const targetUser = await users.findOne({ _id: targetUserId });
