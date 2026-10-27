@@ -276,6 +276,26 @@ describe('POST /v1/me/prompts', () => {
     expect((await post('prompt-travel')).status).toBe(422);
   });
 
+  it('counts an answer saved before slots existed toward the limit', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+    const user = await db.collection<UserDocument>('users').findOne({ firebaseUid: 'firebase-uid-1' });
+    // Shape written before review-gated prompts: auto-approved text, no slot
+    await db.collection('promptAnswers').insertOne({
+      _id: 'legacy-1', ownerId: user!._id, promptId: 'prompt-tradition', text: 'Buna',
+      state: 'approved', publishedRevision: 1, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const post = (promptId: string) =>
+      request(app).post('/v1/me/prompts').set('Authorization', 'Bearer valid-token').send({ promptId, text: 'Answer' });
+
+    expect((await post('prompt-home')).status).toBe(201);
+    expect((await post('prompt-sunday')).status).toBe(201);
+    const fourth = await post('prompt-song');
+    expect(fourth.status).toBe(422);
+    expect(fourth.body.error.code).toBe('PROMPT_LIMIT');
+  });
+
   it('rejects unknown prompt ID', async () => {
     const app = buildApp();
     await bootstrapUser(app);

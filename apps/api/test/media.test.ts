@@ -35,7 +35,10 @@ const UNIQUE_KEYS: Record<string, { keys: string[]; partial?: (doc: Doc) => bool
   users: [{ keys: ['firebaseUid'] }],
   profiles: [{ keys: ['userId'] }],
   preferences: [{ keys: ['userId'] }],
-  promptAnswers: [{ keys: ['ownerId', 'promptId'] }, { keys: ['ownerId', 'slot'] }],
+  promptAnswers: [
+    { keys: ['ownerId', 'promptId'] },
+    { keys: ['ownerId', 'slot'], partial: (doc) => doc['slot'] !== undefined },
+  ],
   photos: [{ keys: ['ownerId', 'idempotencyKey'], partial: (doc) => typeof doc['idempotencyKey'] === 'string' }],
 };
 

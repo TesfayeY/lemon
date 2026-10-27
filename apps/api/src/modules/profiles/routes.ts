@@ -302,8 +302,12 @@ export function createProfileRoutes(db: Db, auth: Auth) {
         sendDuplicate();
         return;
       }
+      // Answers saved before slots existed hold none until the startup migration
+      // assigns one, so they still count toward the limit
       const used = new Set(owned.map(a => a.slot));
-      const slot = Array.from({ length: MAX_PROMPT_ANSWERS }, (_, i) => i).find(i => !used.has(i));
+      const slot = owned.length >= MAX_PROMPT_ANSWERS
+        ? undefined
+        : Array.from({ length: MAX_PROMPT_ANSWERS }, (_, i) => i).find(i => !used.has(i));
       if (slot === undefined) {
         res.status(422).json({
           error: { code: 'PROMPT_LIMIT', message: `You can have at most ${MAX_PROMPT_ANSWERS} prompt answers`, retryable: false },

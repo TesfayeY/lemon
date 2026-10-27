@@ -87,6 +87,7 @@ Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open
 - OpenAPI contract `contracts/openapi.yaml` + shared fixtures `contracts/fixtures/`
 - Dart DTOs: `core/api/api_error.dart`, `core/catalogs/catalogs.dart`, `features/onboarding/data/account.dart`, `features/profile/data/{profile,preferences}.dart`
 - Fictional seed profiles: `scripts/seed.sh` (8 people, refuses production, idempotent)
+- Startup migration for prompt answers saved before review-gated prompts and slots: converts auto-approved `text` to `approvedText`, assigns free slots, and moves answers over the limit (published, then oldest, are kept) to `promptAnswersArchive`
 
 ### Tests (149 API + 30 Flutter passing)
 - Validation: Ethiopic/combining-character names at the 40-grapheme limit, whitespace-only and non-string names, unknown catalog IDs (city, gender, intention, language, prompt), text limits, heights, age bounds
@@ -96,10 +97,12 @@ Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open
 - Contract: every fixture validates against the schema; live responses for every Phase 03-04 endpoint (incl. errors) validate; leaked private field and pending text are rejected
 - Dart: every fixture round-trips through its DTO; unknown readiness values tolerated; unknown visibility rejected
 - Seed data passes the same validators as real edits; seed run verified against local MongoDB
+- Prompt answer migration (local MongoDB): slot index builds over legacy answers, legacy text converts without publishing unapproved text, existing slots kept, over-limit answers archived, idempotent, concurrent runs settle, migrated answers editable through the API; slotless answers count toward the limit
 
 ### Open
 - P-03: confirm which sensitive fields (religion, family plans, lifestyle) ship at launch
 - Languages catalog is a proposal; needs owner review
 - API route tests use an in-memory collection stand-in; real-Mongo race tests are Phase 17
+- Account deletion must also purge `promptAnswersArchive`; drop the prompt answer migration once every environment has run it
 
-## Total: 268 tests passing (238 API + 30 Flutter)
+## Total: 277 tests passing (247 API + 30 Flutter)

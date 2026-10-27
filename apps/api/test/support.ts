@@ -23,11 +23,11 @@ export function createMockAuth(): Auth {
 }
 
 // Mirrors src/indexes.ts so duplicate-key paths behave like MongoDB
-const UNIQUE_KEYS: Record<string, string[][]> = {
-  users: [['firebaseUid']],
-  profiles: [['userId']],
-  preferences: [['userId']],
-  promptAnswers: [['ownerId', 'promptId'], ['ownerId', 'slot']],
+const UNIQUE_KEYS: Record<string, { keys: string[]; partial?: (doc: Record<string, unknown>) => boolean }[]> = {
+  users: [{ keys: ['firebaseUid'] }],
+  profiles: [{ keys: ['userId'] }],
+  preferences: [{ keys: ['userId'] }],
+  promptAnswers: [{ keys: ['ownerId', 'promptId'] }, { keys: ['ownerId', 'slot'], partial: (doc) => doc['slot'] !== undefined }],
 };
 
 /** Equality plus the few operators the routes use ($ne) */
@@ -68,9 +68,11 @@ export function createInMemoryDb() {
           }),
         })),
         insertOne: vi.fn(async (doc: Record<string, unknown>) => {
-          const uniqueKeys = [['_id'], ...(UNIQUE_KEYS[name] ?? [])];
+          const uniqueKeys = [{ keys: ['_id'] }, ...(UNIQUE_KEYS[name] ?? [])]
+            .filter(index => !index.partial || index.partial(doc));
           for (const existing of store.values()) {
-            if (uniqueKeys.some(keys => keys.every(k => existing[k] === doc[k]))) {
+            const clashes = uniqueKeys.filter(index => !index.partial || index.partial(existing));
+            if (clashes.some(({ keys }) => keys.every(k => existing[k] === doc[k]))) {
               const err = new Error('duplicate key') as Error & { code: number };
               err.code = 11000;
               throw err;

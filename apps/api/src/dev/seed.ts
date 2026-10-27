@@ -8,6 +8,7 @@
 import { loadConfig } from '../config.js';
 import { connectDb, closeDb } from '../db.js';
 import { ensureIndexes } from '../indexes.js';
+import { migratePromptAnswers } from '../modules/profiles/prompt-answer-migration.js';
 import { recomputeReadiness } from '../modules/profiles/readiness-service.js';
 import { buildSeedDocuments } from './seed-data.js';
 
@@ -17,8 +18,9 @@ async function main() {
     throw new Error('Refusing to seed fictional profiles in production');
   }
 
-  const { db } = await connectDb(config);
+  const { client, db } = await connectDb(config);
   await ensureIndexes(db);
+  await migratePromptAnswers(client, db);
 
   const docs = buildSeedDocuments();
   for (const [name, list] of Object.entries(docs) as [keyof typeof docs, { _id: string }[]][]) {
