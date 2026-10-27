@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid fields",
+    "fieldErrors": [{ "field": "displayName", "message": "Name must be 40 characters or fewer" }],
+    "retryable": false
+  },
+  "requestId": "fixture-request-validation"
+}

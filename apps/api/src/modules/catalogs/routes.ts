@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { US_STATES, SEED_CITIES, PROMPT_CATALOG, INTENTIONS, GENDER_CATEGORIES } from './data.js';
+import { US_STATES, SEED_CITIES, PROMPT_CATALOG, INTENTIONS, GENDER_CATEGORIES, LANGUAGES } from './data.js';
 
 export function createCatalogRoutes() {
   const router = Router();
@@ -13,6 +13,7 @@ export function createCatalogRoutes() {
         prompts: PROMPT_CATALOG.filter(p => p.active),
         intentions: INTENTIONS,
         genderCategories: GENDER_CATEGORIES,
+        languages: LANGUAGES,
       },
       meta: { requestId: _req.requestId },
     });

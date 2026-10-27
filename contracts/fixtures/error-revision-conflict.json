@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "REVISION_CONFLICT",
+    "message": "Profile has been modified. Please refresh and try again.",
+    "currentRevision": 8,
+    "retryable": true
+  },
+  "requestId": "fixture-request-conflict"
+}

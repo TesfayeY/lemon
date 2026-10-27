@@ -1,0 +1,14 @@
+{
+  "data": {
+    "userId": "6f1c2a9e-3b7d-4e1a-9c55-0d2f8b7a4e10",
+    "accountStatus": "onboarding",
+    "emailVerified": true,
+    "birthDate": "1995-03-10",
+    "adultEligible": true,
+    "profileReady": false,
+    "discoverPaused": false,
+    "agreements": { "termsVersion": "1.0", "acceptedAt": "2026-10-24T18:02:11.000Z" },
+    "readiness": { "ready": false, "missing": ["photos", "promptAnswers"] }
+  },
+  "meta": { "requestId": "fixture-request-account" }
+}

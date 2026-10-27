@@ -1,0 +1,13 @@
+{
+  "data": {
+    "states": [{ "code": "TX", "name": "Texas" }],
+    "cities": [{ "id": "city-dallas-tx", "name": "Dallas", "stateCode": "TX", "countryCode": "US" }],
+    "prompts": [
+      { "id": "prompt-tradition", "category": "cultural", "text": "A tradition I would love to share with you…", "active": true }
+    ],
+    "intentions": [{ "id": "serious", "label": "Looking for something serious" }],
+    "genderCategories": [{ "id": "woman", "label": "Woman" }, { "id": "man", "label": "Man" }],
+    "languages": [{ "id": "amharic", "label": "Amharic" }, { "id": "tigrinya", "label": "Tigrinya" }]
+  },
+  "meta": { "requestId": "fixture-request-catalogs" }
+}

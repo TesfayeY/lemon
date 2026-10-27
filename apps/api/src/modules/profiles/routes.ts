@@ -4,11 +4,11 @@ import type { Auth } from 'firebase-admin/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
 import { canInteract, type UserDocument } from '../auth/account.js';
-import { createEmptyProfile, normalizeWhitespace, type ProfileDocument, type PromptAnswerDocument } from './schema.js';
+import { createEmptyProfile, normalizeWhitespace, MAX_PROMPT_ANSWERS, type ProfileDocument, type PromptAnswerDocument } from './schema.js';
 import {
   validateDisplayName, validateGenderIdentity, validateIntention,
   validateCity, validateVisibility, validateBio, validatePromptAnswer,
-  validatePromptId, validateHeight, type FieldError,
+  validatePromptId, validateHeight, validateOptionalText, validateLanguages, type FieldError,
 } from './validation.js';
 import { toSelfProfileDTO, toPublicProfileDTO } from './dto.js';
 import { recomputeReadiness } from './readiness-service.js';
@@ -145,14 +145,18 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       }
     }
 
+    if (body['languages'] !== undefined) {
+      const err = validateLanguages(body['languages']);
+      if (err) errors.push(err);
+      else updates['languages'] = [...new Set(body['languages'] as string[])];
+    }
+
     // Simple string optional fields
     for (const field of ['hometown', 'occupation', 'education', 'religion']) {
       if (body[field] !== undefined) {
-        if (body[field] !== null && typeof body[field] !== 'string') {
-          errors.push({ field, message: 'Must be a string or null' });
-        } else {
-          updates[field] = body[field] === null ? null : normalizeWhitespace(body[field] as string);
-        }
+        const err = validateOptionalText(body[field], field);
+        if (err) errors.push(err);
+        else updates[field] = body[field] === null ? null : normalizeWhitespace(body[field] as string);
       }
     }
 
@@ -201,8 +205,33 @@ export function createProfileRoutes(db: Db, auth: Auth) {
   });
 
   /**
+   * GET /v1/me/profile
+   * Owner view: every own field, visibility settings and answers awaiting review.
+   */
+  router.get('/v1/me/profile', requireAuth, async (req: Request, res: Response) => {
+    const { uid } = req as AuthenticatedRequest;
+    const user = await users.findOne({ firebaseUid: uid });
+    if (!user) {
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    const profile = await findOrCreateProfile(user._id);
+    const answers = await promptAnswers.find({ ownerId: user._id }).toArray();
+
+    res.json({
+      data: toSelfProfileDTO(profile, user, answers),
+      meta: { requestId: req.requestId },
+    });
+  });
+
+  /**
    * GET /v1/me/profile/preview
-   * Self preview with public projection semantics.
+   * Self preview with public projection semantics: exactly what others would
+   * see, so hidden fields and unreviewed answers are absent.
    */
   router.get('/v1/me/profile/preview', requireAuth, async (req: Request, res: Response) => {
     const { uid } = req as AuthenticatedRequest;
@@ -217,17 +246,16 @@ export function createProfileRoutes(db: Db, auth: Auth) {
 
     const profile = await findOrCreateProfile(user._id);
     const answers = await promptAnswers.find({ ownerId: user._id }).toArray();
-    const selfDTO = toSelfProfileDTO(profile, user, answers);
 
     res.json({
-      data: selfDTO,
+      data: toPublicProfileDTO(profile, user, answers),
       meta: { requestId: req.requestId },
     });
   });
 
   /**
    * POST /v1/me/prompts
-   * Add a prompt answer. Max 3 distinct prompts.
+   * Add a prompt answer. At most MAX_PROMPT_ANSWERS, one per distinct prompt.
    */
   router.post('/v1/me/prompts', requireAuth, async (req: Request, res: Response) => {
     const { uid } = req as AuthenticatedRequest;
@@ -257,47 +285,64 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    // Check for duplicate prompt
-    const existing = await promptAnswers.findOne({
-      ownerId: user._id,
-      promptId: body['promptId'] as string,
+    const promptId = body['promptId'] as string;
+    const sendDuplicate = () => res.status(409).json({
+      error: { code: 'DUPLICATE_PROMPT', message: 'You already answered this prompt', retryable: false },
+      requestId: req.requestId,
     });
-    if (existing) {
-      res.status(409).json({
-        error: { code: 'DUPLICATE_PROMPT', message: 'You already answered this prompt', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
+
+    // Claim the first free slot. The unique (ownerId, slot) index makes the cap
+    // atomic: a concurrent request that took the same slot makes this insert
+    // fail, and the re-read decides between the next slot, a duplicate or the limit.
+    // Each lost race means another answer landed, so MAX + 1 rounds always settle.
+    let answer: PromptAnswerDocument | null = null;
+    for (let round = 0; round <= MAX_PROMPT_ANSWERS && !answer; round++) {
+      const owned = await promptAnswers.find({ ownerId: user._id }).toArray();
+      if (owned.some(a => a.promptId === promptId)) {
+        sendDuplicate();
+        return;
+      }
+      // Answers saved before slots existed hold none until the startup migration
+      // assigns one, so they still count toward the limit
+      const used = new Set(owned.map(a => a.slot));
+      const slot = owned.length >= MAX_PROMPT_ANSWERS
+        ? undefined
+        : Array.from({ length: MAX_PROMPT_ANSWERS }, (_, i) => i).find(i => !used.has(i));
+      if (slot === undefined) {
+        res.status(422).json({
+          error: { code: 'PROMPT_LIMIT', message: `You can have at most ${MAX_PROMPT_ANSWERS} prompt answers`, retryable: false },
+          requestId: req.requestId,
+        });
+        return;
+      }
+
+      // New answers wait for review; nothing is published until it is approved
+      const candidate: PromptAnswerDocument = {
+        _id: uuidv4(),
+        ownerId: user._id,
+        promptId,
+        slot,
+        approvedText: null,
+        pendingText: normalizeWhitespace(body['text'] as string),
+        state: 'pending',
+        revision: 1,
+        publishedRevision: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      try {
+        await promptAnswers.insertOne(candidate);
+        answer = candidate;
+      } catch (err: unknown) {
+        // Lost a race for this slot or this prompt; the next round re-reads
+        if (!isDuplicateKeyError(err)) throw err;
+      }
     }
 
-    // Max 3 prompts
-    const count = await promptAnswers.countDocuments({ ownerId: user._id });
-    if (count >= 3) {
-      res.status(422).json({
-        error: { code: 'PROMPT_LIMIT', message: 'You can have at most 3 prompt answers', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
-
-    const answer: PromptAnswerDocument = {
-      _id: uuidv4(),
-      ownerId: user._id,
-      promptId: body['promptId'] as string,
-      text: normalizeWhitespace(body['text'] as string),
-      state: 'approved', // Auto-approve for dev; manual review in Phase 13
-      publishedRevision: 1,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    try {
-      await promptAnswers.insertOne(answer);
-    } catch (err: unknown) {
-      // Concurrent duplicate submission hit the unique (ownerId, promptId) index
-      if (!isDuplicateKeyError(err)) throw err;
+    if (!answer) {
+      // Only reachable if concurrent deletes keep freeing slots mid-race
       res.status(409).json({
-        error: { code: 'DUPLICATE_PROMPT', message: 'You already answered this prompt', retryable: false },
+        error: { code: 'CONCURRENT_EDIT', message: 'Your answers changed while saving. Please try again.', retryable: true },
         requestId: req.requestId,
       });
       return;
@@ -305,7 +350,83 @@ export function createProfileRoutes(db: Db, auth: Auth) {
     await recomputeReadiness(db, user._id);
 
     res.status(201).json({
-      data: { id: answer._id, promptId: answer.promptId, state: answer.state },
+      data: { id: answer._id, promptId: answer.promptId, state: answer.state, revision: answer.revision },
+      meta: { requestId: req.requestId },
+    });
+  });
+
+  /**
+   * PATCH /v1/me/prompts/:id
+   * Submit replacement text for review. Approved text stays published until
+   * review accepts the replacement, so readiness is unaffected.
+   */
+  router.patch('/v1/me/prompts/:id', requireAuth, async (req: Request, res: Response) => {
+    const { uid } = req as AuthenticatedRequest;
+    const user = await users.findOne({ firebaseUid: uid });
+    if (!user) {
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    const answerId = req.params['id'] as string;
+    const answer = await promptAnswers.findOne({ _id: answerId, ownerId: user._id });
+    if (!answer) {
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Prompt answer not found', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const errors: FieldError[] = [];
+    const expectedRevision = body['expectedRevision'];
+    if (typeof expectedRevision !== 'number' || !Number.isInteger(expectedRevision)) {
+      errors.push({ field: 'expectedRevision', message: 'Required integer revision' });
+    }
+    const textErr = validatePromptAnswer(body['text']);
+    if (textErr) errors.push(textErr);
+
+    if (errors.length > 0) {
+      res.status(422).json({
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid fields', fieldErrors: errors, retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    const revision = answer.revision + 1;
+    // Compare-and-set on revision so concurrent edits cannot both win
+    const result = await promptAnswers.updateOne(
+      { _id: answer._id, ownerId: user._id, revision: expectedRevision as number },
+      {
+        $set: {
+          pendingText: normalizeWhitespace(body['text'] as string),
+          state: 'pending',
+          revision,
+          updatedAt: new Date(),
+        },
+      },
+    );
+    if (result.matchedCount === 0) {
+      const current = await promptAnswers.findOne({ _id: answer._id });
+      res.status(409).json({
+        error: {
+          code: 'REVISION_CONFLICT',
+          message: 'This answer has been modified. Please refresh and try again.',
+          currentRevision: current?.revision ?? answer.revision,
+          retryable: true,
+        },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    res.json({
+      data: { id: answer._id, state: 'pending', revision },
       meta: { requestId: req.requestId },
     });
   });
@@ -384,9 +505,10 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
+    // Published text only; an answer with an edit awaiting review stays visible
     const answers = await promptAnswers.find({
       ownerId: targetUserId,
-      state: 'approved',
+      approvedText: { $ne: null },
     }).toArray();
 
     const publicDTO = toPublicProfileDTO(profile, targetUser, answers);

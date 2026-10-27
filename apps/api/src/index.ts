@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { connectDb, checkMongo } from './db.js';
 import { initFirebase, checkFirebase, getAuth } from './firebase.js';
 import { ensureIndexes } from './indexes.js';
+import { migratePromptAnswers } from './modules/profiles/prompt-answer-migration.js';
 import { createAuthRoutes } from './modules/auth/routes.js';
 import { createProfileRoutes } from './modules/profiles/routes.js';
 import { createPreferencesRoutes } from './modules/preferences/routes.js';
@@ -13,10 +14,14 @@ async function main() {
   const config = loadConfig();
 
   // Connect to dependencies
-  const { db } = await connectDb(config);
+  const { client, db } = await connectDb(config);
   console.log(`Connected to MongoDB: ${config.MONGO_DB_NAME}`);
 
   await ensureIndexes(db);
+  const migrated = await migratePromptAnswers(client, db);
+  if (migrated.slotted > 0 || migrated.archived > 0) {
+    console.log(`Upgraded prompt answers: ${migrated.slotted} slotted, ${migrated.archived} archived over the limit`);
+  }
 
   const firebaseApp = initFirebase(config);
   console.log(`Firebase initialized: ${config.FIREBASE_PROJECT_ID}`);

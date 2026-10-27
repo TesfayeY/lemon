@@ -37,16 +37,30 @@ export interface ProfileDocument {
   updatedAt: Date;
 }
 
+/**
+ * A prompt answer keeps its published text separate from the latest
+ * submission, so an edit never replaces approved content before review.
+ * Only review (Phase 05/13) moves pendingText into approvedText.
+ */
 export interface PromptAnswerDocument {
   _id: string;
   ownerId: string;
   promptId: string;
-  text: string;
-  state: 'approved' | 'pending' | 'rejected';
-  publishedRevision: number;
+  slot: number; // 0..MAX_PROMPT_ANSWERS-1; unique per owner, so the database caps the count
+  approvedText: string | null; // published; the only text other users see
+  pendingText: string | null; // awaiting review; never published automatically
+  state: 'approved' | 'pending' | 'rejected'; // review state of the latest submission
+  revision: number; // owner edit revision (two-device safety)
+  publishedRevision: number; // content version of approvedText; 0 = never published
   createdAt: Date;
   updatedAt: Date;
 }
+
+/** Answers per profile; enforced by the unique (ownerId, slot) index */
+export const MAX_PROMPT_ANSWERS = 3;
+
+/** Grapheme limit for optional free-text fields (hometown, occupation, education, religion) */
+export const OPTIONAL_TEXT_MAX = 100;
 
 export function createEmptyProfile(userId: string): ProfileDocument {
   const now = new Date();
