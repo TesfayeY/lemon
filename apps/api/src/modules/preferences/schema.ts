@@ -1,13 +1,17 @@
 /**
  * Dating preferences schema.
  *
- * - Age range: min 18, max configurable
+ * - Age range: 18-99 inclusive
  * - Gender interests: multi-select from catalog
  * - Location scope: city, state, nationwide
  * - Long distance: boolean
  */
 
 export type LocationScope = 'city' | 'state' | 'nationwide';
+
+/** Age range bounds; never let an adult search for anyone under 18 */
+export const MIN_AGE = 18;
+export const MAX_AGE = 99;
 
 export interface PreferencesDocument {
   _id: string; // same as userId

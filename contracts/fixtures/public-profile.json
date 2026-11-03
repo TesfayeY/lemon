@@ -1,0 +1,29 @@
+{
+  "data": {
+    "userId": "6f1c2a9e-3b7d-4e1a-9c55-0d2f8b7a4e10",
+    "displayName": "Selam",
+    "age": 31,
+    "cityName": "Dallas",
+    "stateCode": "TX",
+    "intention": "serious",
+    "intentionLabel": "Looking for something serious",
+    "genderIdentity": "woman",
+    "genderLabel": "Woman",
+    "bio": "Weekend hikes, Sunday buna with friends.",
+    "hometown": null,
+    "occupation": "Pharmacist",
+    "education": null,
+    "height": null,
+    "languages": ["tigrinya", "english"],
+    "religion": null,
+    "promptAnswers": [
+      {
+        "id": "0b4e7c1d-2a3f-4b5c-8d9e-1f2a3b4c5d6e",
+        "promptId": "prompt-tradition",
+        "promptText": "A tradition I would love to share with you…",
+        "text": "The full coffee ceremony, three rounds."
+      }
+    ]
+  },
+  "meta": { "requestId": "fixture-request-public-profile" }
+}

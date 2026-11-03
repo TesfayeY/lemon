@@ -35,6 +35,11 @@ export interface GenderCategory {
   label: string;
 }
 
+export interface LanguageOption {
+  id: string;
+  label: string;
+}
+
 // US States (abbreviated set for launch)
 export const US_STATES: UsState[] = [
   { code: 'AL', name: 'Alabama' },
@@ -133,12 +138,30 @@ export const GENDER_CATEGORIES: GenderCategory[] = [
   { id: 'nonbinary', label: 'Nonbinary' },
 ];
 
+// Languages spoken — optional profile field; seed set, owner review pending
+export const LANGUAGES: LanguageOption[] = [
+  { id: 'english', label: 'English' },
+  { id: 'amharic', label: 'Amharic' },
+  { id: 'tigrinya', label: 'Tigrinya' },
+  { id: 'afaan-oromo', label: 'Afaan Oromo' },
+  { id: 'tigre', label: 'Tigre' },
+  { id: 'somali', label: 'Somali' },
+  { id: 'afar', label: 'Afar' },
+  { id: 'saho', label: 'Saho' },
+  { id: 'bilen', label: 'Bilen' },
+  { id: 'arabic', label: 'Arabic' },
+  { id: 'italian', label: 'Italian' },
+  { id: 'french', label: 'French' },
+  { id: 'spanish', label: 'Spanish' },
+];
+
 // Lookup helpers
 const cityMap = new Map(SEED_CITIES.map(c => [c.id, c]));
 const stateMap = new Map(US_STATES.map(s => [s.code, s]));
 const promptMap = new Map(PROMPT_CATALOG.map(p => [p.id, p]));
 const intentionMap = new Map(INTENTIONS.map(i => [i.id, i]));
 const genderMap = new Map(GENDER_CATEGORIES.map(g => [g.id, g]));
+const languageMap = new Map(LANGUAGES.map(l => [l.id, l]));
 
 export function findCity(id: string): City | undefined { return cityMap.get(id); }
 export function findState(code: string): UsState | undefined { return stateMap.get(code); }
@@ -152,3 +175,4 @@ export function isValidPromptId(id: string): boolean {
 }
 export function isValidIntentionId(id: string): boolean { return intentionMap.has(id); }
 export function isValidGenderId(id: string): boolean { return genderMap.has(id); }
+export function isValidLanguageId(id: string): boolean { return languageMap.has(id); }

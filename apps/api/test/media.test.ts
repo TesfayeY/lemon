@@ -35,7 +35,10 @@ const UNIQUE_KEYS: Record<string, { keys: string[]; partial?: (doc: Doc) => bool
   users: [{ keys: ['firebaseUid'] }],
   profiles: [{ keys: ['userId'] }],
   preferences: [{ keys: ['userId'] }],
-  promptAnswers: [{ keys: ['ownerId', 'promptId'] }],
+  promptAnswers: [
+    { keys: ['ownerId', 'promptId'] },
+    { keys: ['ownerId', 'slot'], partial: (doc) => doc['slot'] !== undefined },
+  ],
   photos: [{ keys: ['ownerId', 'idempotencyKey'], partial: (doc) => typeof doc['idempotencyKey'] === 'string' }],
 };
 
@@ -45,6 +48,8 @@ function matchesValue(actual: unknown, condition: unknown): boolean {
       switch (op) {
         case '$in': return (operand as unknown[]).includes(actual);
         case '$lt': return actual instanceof Date && actual < (operand as Date);
+        // Like MongoDB, { $ne: null } also excludes a missing field
+        case '$ne': return operand === null ? actual !== null && actual !== undefined : actual !== operand;
         default: throw new Error(`Unsupported operator in fake Db: ${op}`);
       }
     });
@@ -201,10 +206,10 @@ async function seedCompleteProfile(db: Db, name: string): Promise<void> {
     ...createDefaultPreferences(userId(name)),
     acceptedGenderCategories: ['man'],
   } as unknown as Doc);
-  for (const promptId of ['prompt-1', 'prompt-2', 'prompt-3']) {
+  for (const [slot, promptId] of ['prompt-1', 'prompt-2', 'prompt-3'].entries()) {
     await db.collection('promptAnswers').insertOne({
-      _id: uuidv4(), ownerId: userId(name), promptId, text: 'Buna with friends', state: 'approved',
-      publishedRevision: 1, createdAt: now, updatedAt: now,
+      _id: uuidv4(), ownerId: userId(name), promptId, slot, approvedText: 'Buna with friends', pendingText: null,
+      state: 'approved', revision: 1, publishedRevision: 1, createdAt: now, updatedAt: now,
     } as unknown as Doc);
   }
 }

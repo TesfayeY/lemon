@@ -11,7 +11,7 @@
 import type { ProfileDocument, PromptAnswerDocument } from './schema.js';
 import type { UserDocument } from '../auth/account.js';
 import { calculateAge } from '../auth/adult-gate.js';
-import { findCity, findGender, findIntention } from '../catalogs/data.js';
+import { findCity, findGender, findIntention, findPrompt } from '../catalogs/data.js';
 
 /** What the owner sees about their own profile */
 export interface SelfProfileDTO {
@@ -36,18 +36,22 @@ export interface SelfProfileDTO {
   languagesDisplay: string;
   religion: string | null;
   religionDisplay: string;
-  promptAnswers: PromptAnswerDTO[];
+  promptAnswers: SelfPromptAnswerDTO[];
   revision: number;
   profileReady: boolean;
 }
 
-/** What other users see — public projection only */
+/**
+ * What other users see — public projection only.
+ * Name, age and location are null only in the owner's preview of an
+ * incomplete draft; profiles served to others are always ready.
+ */
 export interface PublicProfileDTO {
   userId: string;
-  displayName: string;
-  age: number;
-  cityName: string;
-  stateCode: string;
+  displayName: string | null;
+  age: number | null;
+  cityName: string | null;
+  stateCode: string | null;
   intention: string | null;
   intentionLabel: string | null;
   genderIdentity: string | null; // only if genderDisplay === 'public'
@@ -63,11 +67,23 @@ export interface PublicProfileDTO {
   // photos will be added when media module is built
 }
 
+/** A published prompt answer as other users see it */
 export interface PromptAnswerDTO {
   id: string;
   promptId: string;
   promptText: string;
   text: string;
+}
+
+/** The owner's view of an answer, including any submission awaiting review */
+export interface SelfPromptAnswerDTO {
+  id: string;
+  promptId: string;
+  promptText: string;
+  approvedText: string | null;
+  pendingText: string | null;
+  state: PromptAnswerDocument['state'];
+  revision: number;
 }
 
 export function toSelfProfileDTO(
@@ -98,9 +114,7 @@ export function toSelfProfileDTO(
     languagesDisplay: profile.languagesDisplay,
     religion: profile.religion,
     religionDisplay: profile.religionDisplay,
-    promptAnswers: answers
-      .filter(a => a.state === 'approved')
-      .map(toPromptAnswerDTO),
+    promptAnswers: answers.map(toSelfPromptAnswerDTO),
     revision: profile.revision,
     profileReady: user.profileReady,
   };
@@ -115,15 +129,12 @@ export function toPublicProfileDTO(
   const intention = profile.intention ? findIntention(profile.intention) : null;
   const gender = profile.genderIdentity ? findGender(profile.genderIdentity) : null;
 
-  const birthDate = user.birthDate ? new Date(user.birthDate) : null;
-  const age = birthDate ? calculateAge(birthDate) : 0;
-
   return {
     userId: profile.userId,
-    displayName: profile.displayName!,
-    age,
-    cityName: city?.name ?? '',
-    stateCode: profile.stateCode ?? '',
+    displayName: profile.displayName,
+    age: user.birthDate ? calculateAge(new Date(user.birthDate)) : null,
+    cityName: city?.name ?? null,
+    stateCode: profile.stateCode,
     intention: profile.intention,
     intentionLabel: intention?.label ?? null,
     genderIdentity: profile.genderDisplay === 'public' ? profile.genderIdentity : null,
@@ -135,21 +146,27 @@ export function toPublicProfileDTO(
     height: profile.heightDisplay === 'public' ? profile.height : null,
     languages: profile.languagesDisplay === 'public' ? profile.languages : [],
     religion: profile.religionDisplay === 'public' ? profile.religion : null,
-    promptAnswers: answers
-      .filter(a => a.state === 'approved')
-      .map(toPromptAnswerDTO),
+    promptAnswers: answers.flatMap(a => (a.approvedText === null ? [] : [toPromptAnswerDTO(a, a.approvedText)])),
   };
 }
 
-function toPromptAnswerDTO(answer: PromptAnswerDocument): PromptAnswerDTO {
-  const prompt = findPrompt(answer.promptId);
+function toPromptAnswerDTO(answer: PromptAnswerDocument, text: string): PromptAnswerDTO {
   return {
     id: answer._id,
     promptId: answer.promptId,
-    promptText: prompt?.text ?? '',
-    text: answer.text,
+    promptText: findPrompt(answer.promptId)?.text ?? '',
+    text,
   };
 }
 
-// Need to import findPrompt
-import { findPrompt } from '../catalogs/data.js';
+function toSelfPromptAnswerDTO(answer: PromptAnswerDocument): SelfPromptAnswerDTO {
+  return {
+    id: answer._id,
+    promptId: answer.promptId,
+    promptText: findPrompt(answer.promptId)?.text ?? '',
+    approvedText: answer.approvedText,
+    pendingText: answer.pendingText,
+    state: answer.state,
+    revision: answer.revision,
+  };
+}

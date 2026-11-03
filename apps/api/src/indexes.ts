@@ -11,6 +11,13 @@ export async function ensureIndexes(db: Db): Promise<void> {
     db.collection('profiles').createIndex({ userId: 1 }, { unique: true }),
     db.collection('preferences').createIndex({ userId: 1 }, { unique: true }),
     db.collection('promptAnswers').createIndex({ ownerId: 1, promptId: 1 }, { unique: true }),
+    // One answer per slot caps answers per owner atomically, even under concurrent inserts.
+    // Partial, so answers saved before slots existed can't block the build;
+    // migratePromptAnswers gives them slots at startup.
+    db.collection('promptAnswers').createIndex(
+      { ownerId: 1, slot: 1 },
+      { unique: true, partialFilterExpression: { slot: { $exists: true } } },
+    ),
     db.collection('photos').createIndex({ ownerId: 1, state: 1, order: 1 }),
     db.collection('photos').createIndex(
       { ownerId: 1, idempotencyKey: 1 },

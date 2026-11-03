@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createAuthMiddleware, type AuthenticatedRequest } from './middleware.js';
 import { createNewUser, canAuthenticate, type UserDocument } from './account.js';
 import { parseBirthDate, isAdultEligible } from './adult-gate.js';
+import { evaluateReadiness, recomputeReadiness } from '../profiles/readiness-service.js';
 
 export function createAuthRoutes(db: Db, auth: Auth) {
   const router = Router();
@@ -17,7 +18,9 @@ export function createAuthRoutes(db: Db, auth: Auth) {
    * Never trusts a UID from the request body — uses the verified token.
    */
   router.post('/v1/me/bootstrap', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
+    const { uid, token } = req as AuthenticatedRequest;
+    // Verification comes from the verified token only; the client re-bootstraps after verifying
+    const emailVerified = token.email_verified === true;
 
     // Check if user already exists
     const existing = await users.findOne({ firebaseUid: uid });
@@ -34,6 +37,11 @@ export function createAuthRoutes(db: Db, auth: Auth) {
         return;
       }
 
+      if (existing.emailVerified !== emailVerified) {
+        await users.updateOne({ _id: existing._id }, { $set: { emailVerified, updatedAt: new Date() } });
+        await recomputeReadiness(db, existing._id);
+      }
+
       res.status(200).json({
         data: {
           userId: existing._id,
@@ -47,7 +55,7 @@ export function createAuthRoutes(db: Db, auth: Auth) {
     }
 
     // Create new user — unique firebaseUid index prevents duplicates
-    const newUser = createNewUser(uuidv4(), uid);
+    const newUser = { ...createNewUser(uuidv4(), uid), emailVerified };
     try {
       await users.insertOne(newUser);
     } catch (err: unknown) {
@@ -111,6 +119,8 @@ export function createAuthRoutes(db: Db, auth: Auth) {
         profileReady: user.profileReady,
         discoverPaused: user.discoverPaused,
         agreements: user.agreements,
+        // Missing requirements double as the resumable onboarding checklist
+        readiness: await evaluateReadiness(db, user),
       },
       meta: { requestId: req.requestId },
     });
@@ -221,6 +231,8 @@ export function createAuthRoutes(db: Db, auth: Auth) {
     updates['updatedAt'] = new Date();
 
     await users.updateOne({ _id: user._id }, { $set: updates });
+    // Birth date and terms are readiness inputs; a birth date also changes who can see whom
+    await recomputeReadiness(db, user._id, { eligibilityChanged: 'birthDate' in updates });
 
     res.json({
       data: { updated: Object.keys(updates).filter(k => k !== 'updatedAt') },

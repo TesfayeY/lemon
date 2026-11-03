@@ -1,11 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
-import { createApp } from '../src/app.js';
-import { createProfileRoutes } from '../src/modules/profiles/routes.js';
-import { createCatalogRoutes } from '../src/modules/catalogs/routes.js';
-import { createPreferencesRoutes } from '../src/modules/preferences/routes.js';
-import { createAuthRoutes } from '../src/modules/auth/routes.js';
-import type { Auth, DecodedIdToken } from 'firebase-admin/auth';
+import type { Auth } from 'firebase-admin/auth';
+import { buildApp, createInMemoryDb, createMultiUserAuth, withInsertBarrier } from './support.js';
 import type { Db } from 'mongodb';
 import { graphemeLength, normalizeWhitespace } from '../src/modules/profiles/schema.js';
 import { checkReadiness } from '../src/modules/profiles/readiness.js';
@@ -14,132 +10,6 @@ import { calculateAge } from '../src/modules/auth/adult-gate.js';
 import type { PromptAnswerDocument } from '../src/modules/profiles/schema.js';
 import type { UserDocument } from '../src/modules/auth/account.js';
 import type { ProfileDocument } from '../src/modules/profiles/schema.js';
-
-// --- Helpers ---
-
-function createMockAuth(): Auth {
-  return {
-    verifyIdToken: vi.fn().mockResolvedValue({
-      uid: 'firebase-uid-1',
-      email: 'test@example.com',
-      email_verified: true,
-    } as Partial<DecodedIdToken>),
-  } as unknown as Auth;
-}
-
-// Mirrors src/indexes.ts so duplicate-key paths behave like MongoDB
-const UNIQUE_KEYS: Record<string, string[][]> = {
-  users: [['firebaseUid']],
-  profiles: [['userId']],
-  preferences: [['userId']],
-  promptAnswers: [['ownerId', 'promptId']],
-};
-
-function createInMemoryDb() {
-  const collections = new Map<string, Map<string, Record<string, unknown>>>();
-
-  function getCol(name: string) {
-    if (!collections.has(name)) collections.set(name, new Map());
-    return collections.get(name)!;
-  }
-
-  return {
-    collection: (name: string) => {
-      const store = getCol(name);
-      return {
-        findOne: vi.fn(async (filter: Record<string, unknown>) => {
-          for (const doc of store.values()) {
-            const match = Object.entries(filter).every(([k, v]) => doc[k] === v);
-            if (match) return doc;
-          }
-          return null;
-        }),
-        find: vi.fn((filter: Record<string, unknown>) => ({
-          toArray: vi.fn(async () => {
-            const results: Record<string, unknown>[] = [];
-            for (const doc of store.values()) {
-              const match = Object.entries(filter).every(([k, v]) => doc[k] === v);
-              if (match) results.push(doc);
-            }
-            return results;
-          }),
-        })),
-        insertOne: vi.fn(async (doc: Record<string, unknown>) => {
-          const uniqueKeys = [['_id'], ...(UNIQUE_KEYS[name] ?? [])];
-          for (const existing of store.values()) {
-            if (uniqueKeys.some(keys => keys.every(k => existing[k] === doc[k]))) {
-              const err = new Error('duplicate key') as Error & { code: number };
-              err.code = 11000;
-              throw err;
-            }
-          }
-          store.set(doc['_id'] as string, { ...doc });
-          return { insertedId: doc['_id'] };
-        }),
-        updateOne: vi.fn(async (filter: Record<string, unknown>, update: Record<string, unknown>) => {
-          for (const [id, doc] of store.entries()) {
-            const match = Object.entries(filter).every(([k, v]) => doc[k] === v);
-            if (match) {
-              const { $set = {}, $inc = {} } = update as {
-                $set?: Record<string, unknown>;
-                $inc?: Record<string, number>;
-              };
-              Object.assign(doc, $set);
-              for (const [k, by] of Object.entries($inc)) doc[k] = ((doc[k] as number) ?? 0) + by;
-              store.set(id, doc);
-              return { matchedCount: 1, modifiedCount: 1 };
-            }
-          }
-          return { matchedCount: 0, modifiedCount: 0 };
-        }),
-        deleteOne: vi.fn(async (filter: Record<string, unknown>) => {
-          for (const [id, doc] of store.entries()) {
-            const match = Object.entries(filter).every(([k, v]) => doc[k] === v);
-            if (match) {
-              store.delete(id);
-              return { deletedCount: 1 };
-            }
-          }
-          return { deletedCount: 0 };
-        }),
-        countDocuments: vi.fn(async (filter: Record<string, unknown>) => {
-          let count = 0;
-          for (const doc of store.values()) {
-            const match = Object.entries(filter).every(([k, v]) => doc[k] === v);
-            if (match) count++;
-          }
-          return count;
-        }),
-      };
-    },
-  } as unknown as Db;
-}
-
-/** Token "token-<name>" authenticates as Firebase UID "uid-<name>" */
-function createMultiUserAuth(): Auth {
-  return {
-    verifyIdToken: vi.fn(async (token: string) => ({
-      uid: `uid-${token.replace('token-', '')}`,
-      email: `${token}@example.com`,
-      email_verified: true,
-    })),
-  } as unknown as Auth;
-}
-
-function buildApp(auth?: Auth, db?: Db) {
-  const a = auth ?? createMockAuth();
-  const d = db ?? createInMemoryDb();
-  return createApp({
-    mongoCheck: async () => true,
-    firebaseCheck: async () => true,
-    routes: [
-      createAuthRoutes(d, a),
-      createProfileRoutes(d, a),
-      createCatalogRoutes(),
-      createPreferencesRoutes(d, a),
-    ],
-  });
-}
 
 async function bootstrapUser(app: ReturnType<typeof buildApp>) {
   await request(app)
@@ -362,6 +232,70 @@ describe('POST /v1/me/prompts', () => {
     expect(res.body.error.code).toBe('PROMPT_LIMIT');
   });
 
+  it('never exceeds 3 answers when different prompts are submitted concurrently', async () => {
+    const prompts = ['prompt-tradition', 'prompt-home', 'prompt-sunday', 'prompt-song', 'prompt-travel', 'prompt-cooking'];
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, withInsertBarrier(db, 'promptAnswers', prompts.length));
+    await bootstrapUser(app);
+
+    const results = await Promise.all(prompts.map(promptId =>
+      request(app).post('/v1/me/prompts').set('Authorization', 'Bearer valid-token').send({ promptId, text: 'Answer' })));
+
+    expect(results.filter(r => r.status === 201)).toHaveLength(3);
+    expect(results.filter(r => r.status !== 201).every(r => r.body.error.code === 'PROMPT_LIMIT')).toBe(true);
+    const user = await db.collection<UserDocument>('users').findOne({ firebaseUid: 'firebase-uid-1' });
+    expect(await db.collection('promptAnswers').countDocuments({ ownerId: user!._id })).toBe(3);
+  });
+
+  it('accepts only one of several concurrent answers to the same prompt', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, withInsertBarrier(db, 'promptAnswers', 3));
+    await bootstrapUser(app);
+
+    const results = await Promise.all([1, 2, 3].map(n =>
+      request(app).post('/v1/me/prompts').set('Authorization', 'Bearer valid-token')
+        .send({ promptId: 'prompt-tradition', text: `Answer ${n}` })));
+
+    expect(results.map(r => r.status).sort()).toEqual([201, 409, 409]);
+    expect(results.filter(r => r.status === 409).every(r => r.body.error.code === 'DUPLICATE_PROMPT')).toBe(true);
+  });
+
+  it('frees a slot when an answer is deleted', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    const post = (promptId: string) =>
+      request(app).post('/v1/me/prompts').set('Authorization', 'Bearer valid-token').send({ promptId, text: 'Answer' });
+
+    const first = await post('prompt-tradition');
+    await post('prompt-home');
+    await post('prompt-sunday');
+    expect((await post('prompt-song')).status).toBe(422);
+
+    await request(app).delete(`/v1/me/prompts/${first.body.data.id}`).set('Authorization', 'Bearer valid-token');
+    expect((await post('prompt-song')).status).toBe(201);
+    expect((await post('prompt-travel')).status).toBe(422);
+  });
+
+  it('counts an answer saved before slots existed toward the limit', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+    const user = await db.collection<UserDocument>('users').findOne({ firebaseUid: 'firebase-uid-1' });
+    // Shape written before review-gated prompts: auto-approved text, no slot
+    await db.collection('promptAnswers').insertOne({
+      _id: 'legacy-1', ownerId: user!._id, promptId: 'prompt-tradition', text: 'Buna',
+      state: 'approved', publishedRevision: 1, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const post = (promptId: string) =>
+      request(app).post('/v1/me/prompts').set('Authorization', 'Bearer valid-token').send({ promptId, text: 'Answer' });
+
+    expect((await post('prompt-home')).status).toBe(201);
+    expect((await post('prompt-sunday')).status).toBe(201);
+    const fourth = await post('prompt-song');
+    expect(fourth.status).toBe(422);
+    expect(fourth.body.error.code).toBe('PROMPT_LIMIT');
+  });
+
   it('rejects unknown prompt ID', async () => {
     const app = buildApp();
     await bootstrapUser(app);
@@ -494,18 +428,26 @@ describe('Public profile DTO', () => {
         religionDisplay: 'private',
       });
 
-    // Get self preview (shows everything)
+    // Owner view shows everything, including visibility settings
+    const own = await request(app)
+      .get('/v1/me/profile')
+      .set('Authorization', 'Bearer valid-token');
+
+    expect(own.status).toBe(200);
+    expect(own.body.data.religion).toBe('Orthodox');
+    expect(own.body.data.religionDisplay).toBe('private');
+
+    // Preview is exactly what other people would see
     const preview = await request(app)
       .get('/v1/me/profile/preview')
       .set('Authorization', 'Bearer valid-token');
 
     expect(preview.status).toBe(200);
-    expect(preview.body.data.religion).toBe('Orthodox');
-
-    // NOTE: Public view test would need a second user and active status
-    // For now we verify the DTO logic via the self preview which includes
-    // visibility fields that the public DTO respects
-    expect(preview.body.data.religionDisplay).toBe('private');
+    expect(preview.body.data.displayName).toBe('Tesfa');
+    expect(preview.body.data.religion).toBeNull();
+    expect(preview.body.data).not.toHaveProperty('religionDisplay');
+    expect(preview.body.data).not.toHaveProperty('revision');
+    expect(JSON.stringify(preview.body.data)).not.toContain('Orthodox');
   });
 });
 
@@ -648,9 +590,9 @@ describe('Revision safety (two devices)', () => {
     const retry = await edit({ expectedRevision: 2, displayName: 'Tablet' });
     expect(retry.status).toBe(200);
 
-    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer valid-token');
-    expect(preview.body.data.displayName).toBe('Tablet');
-    expect(preview.body.data.revision).toBe(3);
+    const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer valid-token');
+    expect(own.body.data.displayName).toBe('Tablet');
+    expect(own.body.data.revision).toBe(3);
   });
 
   it('requires expectedRevision and rejects stale preference edits', async () => {
@@ -667,13 +609,13 @@ describe('Revision safety (two devices)', () => {
     expect(stale.body.error.currentRevision).toBe(2);
   });
 
-  it('returns revision 1 from preview before the first edit', async () => {
+  it('returns revision 1 from the owner view before the first edit', async () => {
     const app = buildApp();
     await bootstrapUser(app);
 
-    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer valid-token');
-    expect(preview.status).toBe(200);
-    expect(preview.body.data.revision).toBe(1);
+    const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer valid-token');
+    expect(own.status).toBe(200);
+    expect(own.body.data.revision).toBe(1);
   });
 });
 
@@ -704,8 +646,8 @@ describe('Server-owned fields', () => {
     expect(me.body.data.accountStatus).toBe('onboarding');
     expect(me.body.data.profileReady).toBe(false);
 
-    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer valid-token');
-    expect(preview.body.data.revision).toBe(1);
+    const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer valid-token');
+    expect(own.body.data.revision).toBe(1);
   });
 
   it('ignores server-owned fields on preference edits', async () => {
@@ -730,7 +672,8 @@ describe('Server-owned fields', () => {
       .send({ promptId: 'prompt-tradition', text: 'Coffee', state: 'rejected', publishedRevision: 9, ownerId: 'x' });
 
     expect(res.status).toBe(201);
-    expect(res.body.data.state).toBe('approved');
+    expect(res.body.data.state).toBe('pending');
+    expect(res.body.data.revision).toBe(1);
   });
 });
 
@@ -751,8 +694,8 @@ describe('Own-resource authorization', () => {
       .set('Authorization', 'Bearer token-bob');
     expect(res.status).toBe(404);
 
-    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer token-alice');
-    expect(preview.body.data.promptAnswers).toHaveLength(1);
+    const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer token-alice');
+    expect(own.body.data.promptAnswers).toHaveLength(1);
   });
 
   it('blocks viewers who are not active and ready from viewing profiles', async () => {
@@ -839,9 +782,9 @@ describe('toPublicProfileDTO', () => {
   };
 
   const answers: PromptAnswerDocument[] = [
-    { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', text: 'Buna', state: 'approved', publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
-    { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', text: 'Pending answer', state: 'pending', publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
-  ] as PromptAnswerDocument[];
+    { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', slot: 0, approvedText: 'Buna', pendingText: 'Pending replacement', state: 'pending', revision: 2, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', slot: 1, approvedText: null, pendingText: 'Pending answer', state: 'pending', revision: 1, publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
+  ];
 
   const dto = toPublicProfileDTO(profile, user, answers);
   const serialized = JSON.stringify(dto);
@@ -871,8 +814,286 @@ describe('toPublicProfileDTO', () => {
     expect(dto.occupation).toBe('Nurse');
   });
 
-  it('only publishes approved prompt answers', () => {
+  it('only publishes approved prompt text, never pending replacements', () => {
     expect(dto.promptAnswers.map(a => a.id)).toEqual(['a1']);
+    expect(dto.promptAnswers[0]!.text).toBe('Buna');
     expect(serialized).not.toContain('Pending answer');
+    expect(serialized).not.toContain('Pending replacement');
+    expect(serialized).not.toContain('pendingText');
+  });
+});
+
+describe('Prompt answer review states', () => {
+  const auth = (r: request.Test) => r.set('Authorization', 'Bearer valid-token');
+
+  /** Stand-in for the Phase 05 review service: publish the pending text */
+  async function approve(db: Db, answerId: string) {
+    const answers = db.collection<PromptAnswerDocument>('promptAnswers');
+    const answer = (await answers.findOne({ _id: answerId }))!;
+    await answers.updateOne({ _id: answerId }, {
+      $set: { approvedText: answer.pendingText, pendingText: null, state: 'approved', publishedRevision: answer.publishedRevision + 1 },
+    });
+  }
+
+  it('holds a new answer as pending: visible to the owner, absent from the public preview', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+
+    const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
+    expect(created.status).toBe(201);
+    expect(created.body.data.state).toBe('pending');
+
+    const own = await auth(request(app).get('/v1/me/profile'));
+    expect(own.body.data.promptAnswers).toEqual([
+      expect.objectContaining({ id: created.body.data.id, approvedText: null, pendingText: 'Buna', state: 'pending', revision: 1 }),
+    ]);
+
+    const preview = await auth(request(app).get('/v1/me/profile/preview'));
+    expect(preview.body.data.promptAnswers).toEqual([]);
+  });
+
+  it('keeps approved text published while an edit waits for review', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+
+    const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
+    await approve(db, created.body.data.id);
+
+    const edit = await auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`))
+      .send({ expectedRevision: 1, text: '  Coffee   ceremony  ' });
+    expect(edit.status).toBe(200);
+    expect(edit.body.data).toEqual({ id: created.body.data.id, state: 'pending', revision: 2 });
+
+    const preview = await auth(request(app).get('/v1/me/profile/preview'));
+    expect(preview.body.data.promptAnswers.map((a: { text: string }) => a.text)).toEqual(['Buna']);
+
+    const own = await auth(request(app).get('/v1/me/profile'));
+    expect(own.body.data.promptAnswers[0]).toMatchObject({ approvedText: 'Buna', pendingText: 'Coffee ceremony', state: 'pending' });
+  });
+
+  it('requires expectedRevision on answer edits and rejects stale ones', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
+    const edit = (body: Record<string, unknown>) =>
+      auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`)).send(body);
+
+    expect((await edit({ text: 'No revision' })).status).toBe(422);
+    expect((await edit({ expectedRevision: 1, text: 'Phone' })).status).toBe(200);
+
+    const stale = await edit({ expectedRevision: 1, text: 'Tablet' });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('REVISION_CONFLICT');
+    expect(stale.body.error.currentRevision).toBe(2);
+  });
+
+  it('validates edited answer text with the same grapheme limit', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
+    const edit = (text: string) =>
+      auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`)).send({ expectedRevision: 1, text });
+
+    expect((await edit('   ')).status).toBe(422);
+    expect((await edit('ሀ'.repeat(301))).status).toBe(422);
+    expect((await edit('ሀ'.repeat(300))).status).toBe(200);
+  });
+
+  it('cannot edit another user\'s answer', async () => {
+    const app = buildApp(createMultiUserAuth());
+    for (const t of ['token-alice', 'token-bob']) {
+      await request(app).post('/v1/me/bootstrap').set('Authorization', `Bearer ${t}`);
+    }
+    const created = await request(app).post('/v1/me/prompts').set('Authorization', 'Bearer token-alice')
+      .send({ promptId: 'prompt-tradition', text: 'Buna' });
+
+    const res = await request(app).patch(`/v1/me/prompts/${created.body.data.id}`).set('Authorization', 'Bearer token-bob')
+      .send({ expectedRevision: 1, text: 'Hijacked' });
+    expect(res.status).toBe(404);
+
+    const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer token-alice');
+    expect(own.body.data.promptAnswers[0].pendingText).toBe('Buna');
+  });
+
+  it('counts only published answers toward readiness', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+
+    const ids: string[] = [];
+    for (const promptId of ['prompt-tradition', 'prompt-home', 'prompt-sunday']) {
+      const res = await auth(request(app).post('/v1/me/prompts')).send({ promptId, text: 'Answer' });
+      ids.push(res.body.data.id);
+    }
+    let me = await auth(request(app).get('/v1/me'));
+    expect(me.body.data.readiness.missing).toContain('promptAnswers');
+
+    for (const id of ids) await approve(db, id);
+    me = await auth(request(app).get('/v1/me'));
+    expect(me.body.data.readiness.missing).not.toContain('promptAnswers');
+  });
+});
+
+describe('Profile field validation', () => {
+  const edit = (app: ReturnType<typeof buildApp>, body: Record<string, unknown>) =>
+    request(app).patch('/v1/me/profile').set('Authorization', 'Bearer valid-token').send({ expectedRevision: 1, ...body });
+
+  async function freshApp() {
+    const app = buildApp();
+    await bootstrapUser(app);
+    return app;
+  }
+
+  it('accepts 40 grapheme clusters of Ethiopic or combining characters', async () => {
+    expect((await edit(await freshApp(), { displayName: 'ሰ'.repeat(40) })).status).toBe(200);
+    // "é" written as e + combining acute is one grapheme cluster
+    expect((await edit(await freshApp(), { displayName: 'é'.repeat(40) })).status).toBe(200);
+    expect((await edit(await freshApp(), { displayName: 'é'.repeat(41) })).status).toBe(422);
+  });
+
+  it('rejects whitespace-only and non-string names', async () => {
+    expect((await edit(await freshApp(), { displayName: '   \t ' })).status).toBe(422);
+    expect((await edit(await freshApp(), { displayName: 42 })).status).toBe(422);
+    expect((await edit(await freshApp(), { displayName: null })).status).toBe(422);
+  });
+
+  it('stores normalized whitespace in names', async () => {
+    const app = await freshApp();
+    await edit(app, { displayName: '  Selam   Tesfaye ' });
+    const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer valid-token');
+    expect(own.body.data.displayName).toBe('Selam Tesfaye');
+  });
+
+  it('rejects unknown intention IDs', async () => {
+    const res = await edit(await freshApp(), { intention: 'casual-fling' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.fieldErrors[0].field).toBe('intention');
+  });
+
+  it('sets languages from the catalog and de-duplicates them', async () => {
+    const app = await freshApp();
+    const res = await edit(app, { languages: ['amharic', 'tigrinya', 'amharic'] });
+    expect(res.status).toBe(200);
+    const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer valid-token');
+    expect(own.body.data.languages).toEqual(['amharic', 'tigrinya']);
+  });
+
+  it('rejects unknown or malformed languages', async () => {
+    expect((await edit(await freshApp(), { languages: ['klingon'] })).status).toBe(422);
+    expect((await edit(await freshApp(), { languages: 'amharic' })).status).toBe(422);
+    expect((await edit(await freshApp(), { languages: [7] })).status).toBe(422);
+  });
+
+  it('limits optional free-text fields to 100 grapheme clusters', async () => {
+    for (const field of ['hometown', 'occupation', 'education', 'religion']) {
+      expect((await edit(await freshApp(), { [field]: 'ሀ'.repeat(100) })).status).toBe(200);
+      const res = await edit(await freshApp(), { [field]: 'ሀ'.repeat(101) });
+      expect(res.status).toBe(422);
+      expect(res.body.error.fieldErrors[0].field).toBe(field);
+    }
+  });
+
+  it('rejects non-integer and out-of-range heights', async () => {
+    expect((await edit(await freshApp(), { height: 170.5 })).status).toBe(422);
+    expect((await edit(await freshApp(), { height: '170' })).status).toBe(422);
+    expect((await edit(await freshApp(), { height: 300 })).status).toBe(422);
+  });
+});
+
+describe('Preference age range bounds', () => {
+  const edit = async (body: Record<string, unknown>) => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    return request(app).patch('/v1/me/preferences').set('Authorization', 'Bearer valid-token').send({ expectedRevision: 1, ...body });
+  };
+
+  it('rejects maxAge above 99', async () => {
+    expect((await edit({ maxAge: 100 })).status).toBe(422);
+    expect((await edit({ maxAge: 99 })).status).toBe(200);
+  });
+
+  it('rejects non-integer ages', async () => {
+    expect((await edit({ minAge: '25' })).status).toBe(422);
+    expect((await edit({ minAge: 25.5 })).status).toBe(422);
+  });
+
+  it('rejects an empty interest selection', async () => {
+    expect((await edit({ acceptedGenderCategories: [] })).status).toBe(422);
+  });
+});
+
+describe('GET /v1/catalogs languages', () => {
+  it('includes the languages catalog with stable IDs', async () => {
+    const res = await request(buildApp()).get('/v1/catalogs');
+    const ids = res.body.data.languages.map((l: { id: string }) => l.id);
+    expect(ids).toEqual(expect.arrayContaining(['english', 'amharic', 'tigrinya']));
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('Resumable onboarding (GET /v1/me readiness)', () => {
+  const auth = (r: request.Test) => r.set('Authorization', 'Bearer valid-token');
+
+  it('lists every missing requirement for a fresh account', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+
+    const me = await auth(request(app).get('/v1/me'));
+    expect(me.status).toBe(200);
+    expect(me.body.data.readiness).toEqual({
+      ready: false,
+      missing: ['adultEligible', 'termsAccepted', 'displayName', 'genderIdentity', 'interests',
+        'location', 'intention', 'photos', 'promptAnswers'],
+    });
+  });
+
+  it('syncs email verification from the verified token at bootstrap', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+
+    const me = await auth(request(app).get('/v1/me'));
+    expect(me.body.data.emailVerified).toBe(true);
+    expect(me.body.data.readiness.missing).not.toContain('emailVerified');
+  });
+
+  it('reports an unverified email until the token says otherwise', async () => {
+    const unverified = {
+      verifyIdToken: vi.fn().mockResolvedValue({ uid: 'firebase-uid-1', email_verified: false }),
+    } as unknown as Auth;
+    const app = buildApp(unverified);
+    await bootstrapUser(app);
+
+    const me = await auth(request(app).get('/v1/me'));
+    expect(me.body.data.emailVerified).toBe(false);
+    expect(me.body.data.readiness.missing).toContain('emailVerified');
+  });
+
+  it('resumes from server state: completed steps drop out of the missing list', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+
+    await auth(request(app).patch('/v1/me/onboarding')).send({ birthDate: '1995-03-10', termsAccepted: true });
+    await auth(request(app).patch('/v1/me/profile')).send({
+      expectedRevision: 1, displayName: 'Selam', genderIdentity: 'woman', cityId: 'city-dallas-tx', intention: 'serious',
+    });
+    await auth(request(app).patch('/v1/me/preferences')).send({ expectedRevision: 1, acceptedGenderCategories: ['man'] });
+
+    // A second device signing in sees the same server-side progress
+    const me = await auth(request(app).get('/v1/me'));
+    expect(me.body.data.readiness.missing).toEqual(['photos', 'promptAnswers']);
+  });
+
+  it('re-evaluates readiness after onboarding steps and bumps the guard on birth date', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+    const users = db.collection<UserDocument>('users');
+    const before = (await users.findOne({ firebaseUid: 'firebase-uid-1' }))!.guardVersion;
+
+    await auth(request(app).patch('/v1/me/onboarding')).send({ birthDate: '1995-03-10' });
+    // A birth date change affects who can be shown to whom
+    expect((await users.findOne({ firebaseUid: 'firebase-uid-1' }))!.guardVersion).toBe(before + 1);
   });
 });

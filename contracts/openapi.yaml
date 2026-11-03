@@ -1,0 +1,721 @@
+openapi: 3.1.0
+info:
+  title: Lemon API
+  version: 0.4.0
+  description: |
+    Contract for phases 03-04: identity bootstrap, onboarding, catalogs,
+    profiles, prompt answers and preferences.
+
+    Response DTOs set `additionalProperties: false` so that any field added to
+    a response (for example a private field leaking into a public profile)
+    fails the contract test in `apps/api/test/contract.test.ts`.
+
+    Successful responses are wrapped as `{ data, meta }`; failures as
+    `{ error, requestId }`.
+servers:
+  - url: http://localhost:3000
+security:
+  - firebaseIdToken: []
+
+paths:
+  /v1/me/bootstrap:
+    post:
+      summary: Idempotently map the verified Firebase identity to an app account
+      description: Also syncs the cached email verification flag from the verified token.
+      responses:
+        '200':
+          description: Existing account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BootstrapResponse' }
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BootstrapResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/me:
+    get:
+      summary: Private own-account snapshot with readiness and missing onboarding steps
+      responses:
+        '200':
+          description: Account snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data: { $ref: '#/components/schemas/Account' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/me/onboarding:
+    patch:
+      summary: Save birth date and/or terms acceptance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                birthDate:
+                  type: string
+                  format: date
+                  description: ISO calendar date; must be 18+ and not in the future
+                termsAccepted:
+                  const: true
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpdatedResponse' }
+        '400': { $ref: '#/components/responses/NoUpdates' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/catalogs:
+    get:
+      summary: Static catalogs with stable IDs
+      security: []
+      responses:
+        '200':
+          description: Catalogs
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data: { $ref: '#/components/schemas/Catalogs' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /v1/me/profile:
+    get:
+      summary: Owner view of the profile draft, visibility settings and answers awaiting review
+      responses:
+        '200':
+          description: Own profile
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data: { $ref: '#/components/schemas/SelfProfile' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      summary: Edit own profile draft fields
+      description: |
+        Requires the revision the edit was based on. Server-owned fields
+        (readiness, status, roles, revisions) are ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpdate' }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RevisionedUpdateResponse' }
+        '400': { $ref: '#/components/responses/NoUpdates' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/RevisionConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/me/profile/preview:
+    get:
+      summary: Own profile exactly as other people would see it
+      responses:
+        '200':
+          description: Public projection of own profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicProfileResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/prompts:
+    post:
+      summary: Submit an answer to a prompt; it is held for review
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [promptId, text]
+              properties:
+                promptId: { type: string }
+                text: { $ref: '#/components/schemas/PromptText' }
+      responses:
+        '201':
+          description: Answer submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [id, promptId, state, revision]
+                    properties:
+                      id: { type: string }
+                      promptId: { type: string }
+                      state: { $ref: '#/components/schemas/ReviewState' }
+                      revision: { type: integer, minimum: 1 }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/me/prompts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      summary: Submit replacement text for review; approved text stays published meanwhile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedRevision, text]
+              properties:
+                expectedRevision: { type: integer }
+                text: { $ref: '#/components/schemas/PromptText' }
+      responses:
+        '200':
+          description: Replacement submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [id, state, revision]
+                    properties:
+                      id: { type: string }
+                      state: { $ref: '#/components/schemas/ReviewState' }
+                      revision: { type: integer, minimum: 1 }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/RevisionConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      summary: Remove an own answer
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [deleted]
+                    properties:
+                      deleted: { const: true }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/preferences:
+    get:
+      summary: Private dating preferences
+      responses:
+        '200':
+          description: Preferences
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data: { $ref: '#/components/schemas/Preferences' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      summary: Edit dating preferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PreferencesUpdate' }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RevisionedUpdateResponse' }
+        '400': { $ref: '#/components/responses/NoUpdates' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/RevisionConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/profiles/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Opaque app user ID (never a Firebase UID)
+        schema: { type: string }
+    get:
+      summary: Public profile; viewer must be active and ready
+      responses:
+        '200':
+          description: Public profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicProfileResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    firebaseIdToken:
+      type: http
+      scheme: bearer
+      description: Firebase ID token; the only source of identity
+
+  responses:
+    Unauthenticated:
+      description: Missing, invalid or revoked token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: Account restricted or not eligible
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: Resource not found or not owned by the caller
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NoUpdates:
+      description: No editable fields in the request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: Invalid state or duplicate
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RevisionConflict:
+      description: The edit was based on a stale revision; refresh and reapply
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ValidationError:
+      description: One or more fields are invalid
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  schemas:
+    Meta:
+      type: object
+      additionalProperties: false
+      required: [requestId]
+      properties:
+        requestId: { type: string }
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error, requestId]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, retryable]
+          properties:
+            code:
+              type: string
+              examples: [VALIDATION_ERROR, REVISION_CONFLICT, NOT_FOUND, DUPLICATE_PROMPT]
+            message: { type: string }
+            retryable: { type: boolean }
+            fieldErrors:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [field, message]
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+            currentRevision:
+              type: integer
+              description: Present on REVISION_CONFLICT
+        requestId: { type: string }
+
+    UpdatedResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [updated]
+          properties:
+            updated: { type: array, items: { type: string } }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    RevisionedUpdateResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [updated, revision]
+          properties:
+            updated: { type: array, items: { type: string } }
+            revision: { type: integer, minimum: 2 }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    BootstrapResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [userId, accountStatus, profileReady, adultEligible]
+          properties:
+            userId: { type: string }
+            accountStatus: { $ref: '#/components/schemas/AccountStatus' }
+            profileReady: { type: boolean }
+            adultEligible: { type: boolean }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AccountStatus:
+      type: string
+      enum: [onboarding, active, suspended, deletion_pending, deleted]
+
+    ReadinessRequirement:
+      type: string
+      description: A requirement the profile does not yet meet, in onboarding order
+      enum:
+        - emailVerified
+        - adultEligible
+        - termsAccepted
+        - displayName
+        - genderIdentity
+        - interests
+        - location
+        - intention
+        - photos
+        - promptAnswers
+        - accountSuspended
+
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [ready, missing]
+      properties:
+        ready: { type: boolean }
+        missing:
+          type: array
+          items: { $ref: '#/components/schemas/ReadinessRequirement' }
+
+    Account:
+      type: object
+      description: Private; only ever returned to the account owner
+      additionalProperties: false
+      required: [userId, accountStatus, emailVerified, birthDate, adultEligible, profileReady,
+        discoverPaused, agreements, readiness]
+      properties:
+        userId: { type: string }
+        accountStatus: { $ref: '#/components/schemas/AccountStatus' }
+        emailVerified: { type: boolean }
+        birthDate: { type: [string, 'null'], format: date }
+        adultEligible: { type: boolean }
+        profileReady: { type: boolean }
+        discoverPaused: { type: boolean }
+        agreements:
+          type: object
+          additionalProperties: false
+          required: [termsVersion, acceptedAt]
+          properties:
+            termsVersion: { type: [string, 'null'] }
+            acceptedAt: { type: [string, 'null'], format: date-time }
+        readiness: { $ref: '#/components/schemas/Readiness' }
+
+    Visibility:
+      type: string
+      enum: [public, private]
+
+    ReviewState:
+      type: string
+      enum: [pending, approved, rejected]
+
+    DisplayName:
+      type: string
+      description: 1-40 grapheme clusters after whitespace normalization; any script
+      minLength: 1
+
+    PromptText:
+      type: string
+      description: 1-300 grapheme clusters after whitespace normalization
+      minLength: 1
+
+    OptionalText:
+      type: [string, 'null']
+      description: At most 100 grapheme clusters after whitespace normalization
+
+    PromptAnswer:
+      type: object
+      description: A published answer as other users see it
+      additionalProperties: false
+      required: [id, promptId, promptText, text]
+      properties:
+        id: { type: string }
+        promptId: { type: string }
+        promptText: { type: string }
+        text: { type: string }
+
+    SelfPromptAnswer:
+      type: object
+      description: The owner's view of an answer, including a submission awaiting review
+      additionalProperties: false
+      required: [id, promptId, promptText, approvedText, pendingText, state, revision]
+      properties:
+        id: { type: string }
+        promptId: { type: string }
+        promptText: { type: string }
+        approvedText: { type: [string, 'null'] }
+        pendingText: { type: [string, 'null'] }
+        state: { $ref: '#/components/schemas/ReviewState' }
+        revision: { type: integer, minimum: 1 }
+
+    SelfProfile:
+      type: object
+      additionalProperties: false
+      required: [userId, displayName, genderIdentity, genderDisplay, cityId, cityName, stateCode,
+        intention, bio, hometown, hometownDisplay, occupation, occupationDisplay, education,
+        educationDisplay, height, heightDisplay, languages, languagesDisplay, religion,
+        religionDisplay, promptAnswers, revision, profileReady]
+      properties:
+        userId: { type: string }
+        displayName: { type: [string, 'null'] }
+        genderIdentity: { type: [string, 'null'] }
+        genderDisplay: { $ref: '#/components/schemas/Visibility' }
+        cityId: { type: [string, 'null'] }
+        cityName: { type: [string, 'null'] }
+        stateCode: { type: [string, 'null'] }
+        intention: { type: [string, 'null'] }
+        bio: { type: [string, 'null'] }
+        hometown: { $ref: '#/components/schemas/OptionalText' }
+        hometownDisplay: { $ref: '#/components/schemas/Visibility' }
+        occupation: { $ref: '#/components/schemas/OptionalText' }
+        occupationDisplay: { $ref: '#/components/schemas/Visibility' }
+        education: { $ref: '#/components/schemas/OptionalText' }
+        educationDisplay: { $ref: '#/components/schemas/Visibility' }
+        height: { type: [integer, 'null'], minimum: 100, maximum: 250 }
+        heightDisplay: { $ref: '#/components/schemas/Visibility' }
+        languages: { type: array, items: { type: string } }
+        languagesDisplay: { $ref: '#/components/schemas/Visibility' }
+        religion: { $ref: '#/components/schemas/OptionalText' }
+        religionDisplay: { $ref: '#/components/schemas/Visibility' }
+        promptAnswers:
+          type: array
+          maxItems: 3
+          items: { $ref: '#/components/schemas/SelfPromptAnswer' }
+        revision: { type: integer, minimum: 1 }
+        profileReady: { type: boolean }
+
+    PublicProfile:
+      type: object
+      description: |
+        Explicit allowlist. Never contains birth date, email, Firebase UID,
+        account status, moderation data, revisions or visibility settings.
+        Fields the owner set to private are null (or empty for languages).
+        Name, age and location are null only in the owner's preview of an
+        incomplete draft.
+      additionalProperties: false
+      required: [userId, displayName, age, cityName, stateCode, intention, intentionLabel,
+        genderIdentity, genderLabel, bio, hometown, occupation, education, height, languages,
+        religion, promptAnswers]
+      properties:
+        userId: { type: string }
+        displayName: { type: [string, 'null'] }
+        age: { type: [integer, 'null'], minimum: 18 }
+        cityName: { type: [string, 'null'] }
+        stateCode: { type: [string, 'null'] }
+        intention: { type: [string, 'null'] }
+        intentionLabel: { type: [string, 'null'] }
+        genderIdentity: { type: [string, 'null'] }
+        genderLabel: { type: [string, 'null'] }
+        bio: { type: [string, 'null'] }
+        hometown: { type: [string, 'null'] }
+        occupation: { type: [string, 'null'] }
+        education: { type: [string, 'null'] }
+        height: { type: [integer, 'null'] }
+        languages: { type: array, items: { type: string } }
+        religion: { type: [string, 'null'] }
+        promptAnswers:
+          type: array
+          maxItems: 3
+          items: { $ref: '#/components/schemas/PromptAnswer' }
+
+    PublicProfileResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/PublicProfile' }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    ProfileUpdate:
+      type: object
+      required: [expectedRevision]
+      properties:
+        expectedRevision: { type: integer }
+        displayName: { $ref: '#/components/schemas/DisplayName' }
+        genderIdentity: { type: string, description: Gender catalog ID }
+        genderDisplay: { $ref: '#/components/schemas/Visibility' }
+        cityId: { type: string, description: City catalog ID; sets stateCode }
+        intention: { type: string, description: Intention catalog ID }
+        bio: { type: [string, 'null'], description: At most 500 grapheme clusters }
+        hometown: { $ref: '#/components/schemas/OptionalText' }
+        hometownDisplay: { $ref: '#/components/schemas/Visibility' }
+        occupation: { $ref: '#/components/schemas/OptionalText' }
+        occupationDisplay: { $ref: '#/components/schemas/Visibility' }
+        education: { $ref: '#/components/schemas/OptionalText' }
+        educationDisplay: { $ref: '#/components/schemas/Visibility' }
+        height: { type: [integer, 'null'], minimum: 100, maximum: 250 }
+        heightDisplay: { $ref: '#/components/schemas/Visibility' }
+        languages:
+          type: array
+          description: Language catalog IDs; duplicates are removed
+          items: { type: string }
+        languagesDisplay: { $ref: '#/components/schemas/Visibility' }
+        religion: { $ref: '#/components/schemas/OptionalText' }
+        religionDisplay: { $ref: '#/components/schemas/Visibility' }
+
+    LocationScope:
+      type: string
+      enum: [city, state, nationwide]
+
+    Preferences:
+      type: object
+      description: Private; never part of any public projection
+      additionalProperties: false
+      required: [acceptedGenderCategories, minAge, maxAge, locationScope, longDistance, revision]
+      properties:
+        acceptedGenderCategories: { type: array, items: { type: string } }
+        minAge: { type: integer, minimum: 18, maximum: 99 }
+        maxAge: { type: integer, minimum: 18, maximum: 99 }
+        locationScope: { $ref: '#/components/schemas/LocationScope' }
+        longDistance: { type: boolean }
+        revision: { type: integer, minimum: 1 }
+
+    PreferencesUpdate:
+      type: object
+      required: [expectedRevision]
+      properties:
+        expectedRevision: { type: integer }
+        acceptedGenderCategories:
+          type: array
+          minItems: 1
+          description: Gender catalog IDs; duplicates are removed
+          items: { type: string }
+        minAge: { type: integer, minimum: 18, maximum: 99 }
+        maxAge: { type: integer, minimum: 18, maximum: 99, description: Must be >= minAge }
+        locationScope: { $ref: '#/components/schemas/LocationScope' }
+        longDistance: { type: boolean }
+
+    CatalogOption:
+      type: object
+      additionalProperties: false
+      required: [id, label]
+      properties:
+        id: { type: string }
+        label: { type: string }
+
+    Catalogs:
+      type: object
+      additionalProperties: false
+      required: [states, cities, prompts, intentions, genderCategories, languages]
+      properties:
+        states:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, name]
+            properties:
+              code: { type: string }
+              name: { type: string }
+        cities:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name, stateCode, countryCode]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              stateCode: { type: string }
+              countryCode: { const: US }
+        prompts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, category, text, active]
+            properties:
+              id: { type: string }
+              category: { type: string, enum: [general, cultural, lifestyle, dating] }
+              text: { type: string }
+              active: { const: true }
+        intentions:
+          type: array
+          items: { $ref: '#/components/schemas/CatalogOption' }
+        genderCategories:
+          type: array
+          items: { $ref: '#/components/schemas/CatalogOption' }
+        languages:
+          type: array
+          items: { $ref: '#/components/schemas/CatalogOption' }

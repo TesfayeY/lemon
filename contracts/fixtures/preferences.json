@@ -1,0 +1,11 @@
+{
+  "data": {
+    "acceptedGenderCategories": ["man"],
+    "minAge": 27,
+    "maxAge": 38,
+    "locationScope": "state",
+    "longDistance": false,
+    "revision": 3
+  },
+  "meta": { "requestId": "fixture-request-preferences" }
+}
