@@ -52,7 +52,16 @@ paths:
                   data: { $ref: '#/components/schemas/Account' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: '`ACCOUNT_RESTRICTED`: the account is suspended or being deleted'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: '`NOT_FOUND`: no app account for this identity yet (call `POST /v1/me/bootstrap`)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /v1/me/onboarding:
     patch:
@@ -294,7 +303,22 @@ paths:
         description: Opaque app user ID (never a Firebase UID)
         schema: { type: string }
     get:
-      summary: Public profile; viewer must be active and ready
+      summary: Public profile, in context only (no searchable directory)
+      description: |
+        Returns the same public projection as a Discover card. Visible profiles:
+
+        - your own (exactly as others see it, like `GET /v1/me/profile/preview`);
+        - anyone you could see in Discover right now (every discovery rule is
+          rechecked: status, readiness, pause, mutual gender/interest, age and
+          location, likes, passes, blocks and other pair exclusions);
+        - anyone with a pending like to you that the Likes list shows (sender
+          active, ready, not paused, not blocked).
+
+        Everyone else, including unknown IDs, gets the same 404
+        `PROFILE_UNAVAILABLE`, so the response never says why.
+
+        Errors: 403 `ACCOUNT_NOT_ELIGIBLE` (viewer not active and ready);
+        404 `PROFILE_UNAVAILABLE`.
       responses:
         '200':
           description: Public profile
@@ -303,7 +327,11 @@ paths:
               schema: { $ref: '#/components/schemas/PublicProfileResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404':
+          description: '`PROFILE_UNAVAILABLE`: missing, or not visible to this viewer (indistinguishable)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /v1/discovery:
     get:
@@ -324,6 +352,9 @@ paths:
         - `end`: the session is fully scanned; start a new one later.
         - `empty`: nobody matches the viewer's current filters. Filters are
           never widened by the server; offer a user-triggered filter change.
+
+        Each card is `{ profile }`: the same `PublicProfile` projection that
+        `GET /v1/profiles/{id}` returns, approved photos included.
 
         Errors: `INVALID_CURSOR` (400, malformed, tampered or another person's
         cursor), `DISCOVERY_SESSION_EXPIRED` and `DISCOVERY_SESSION_INVALIDATED`
@@ -448,9 +479,7 @@ components:
           additionalProperties: false
           required: [code, message, retryable]
           properties:
-            code:
-              type: string
-              examples: [VALIDATION_ERROR, REVISION_CONFLICT, NOT_FOUND, DUPLICATE_PROMPT]
+            code: { $ref: '#/components/schemas/ErrorCode' }
             message: { type: string }
             retryable: { type: boolean }
             fieldErrors:
@@ -466,6 +495,84 @@ components:
               type: integer
               description: Present on REVISION_CONFLICT
         requestId: { type: string }
+
+    ErrorCode:
+      type: string
+      description: |
+        Every error code the API sends (`apps/api/test/contract.test.ts` fails
+        when the code sends one that is missing here). Show localized copy per
+        code; never show `message` to people.
+
+        - Any route: 401 `UNAUTHENTICATED`, `TOKEN_REVOKED`; 500 `INTERNAL_ERROR`;
+          404 `NOT_FOUND` (no app account yet: call `POST /v1/me/bootstrap`; also
+          a missing own resource or unknown route).
+        - Accounts: 403 `ACCOUNT_RESTRICTED` (suspended or being deleted),
+          `ACCOUNT_NOT_ELIGIBLE` (not active and profile-ready); 422
+          `AGE_INELIGIBLE` (under 18); 409 `INVALID_STATE` (onboarding step
+          after onboarding ended); 400 `NO_UPDATES` (no editable field sent).
+        - Profiles and prompts: 422 `VALIDATION_ERROR`, `PROMPT_LIMIT` (three
+          answers already); 409 `REVISION_CONFLICT` (with `currentRevision`),
+          `DUPLICATE_PROMPT`, `CONCURRENT_EDIT` (retryable); 404
+          `PROFILE_UNAVAILABLE` (another person's profile is missing or not
+          visible to you; deliberately indistinguishable).
+        - Discovery: 403 `DISCOVERY_PAUSED`; 400 `INVALID_CURSOR`; 409
+          `DISCOVERY_SESSION_EXPIRED`, `DISCOVERY_SESSION_INVALIDATED`.
+        - Photos and media (see `openapi/media.yaml` per endpoint):
+          `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_REUSED`,
+          `UPLOAD_IN_PROGRESS`, `FILE_REQUIRED`, `INVALID_MULTIPART`,
+          `PAYLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`, `INVALID_IMAGE`,
+          `IMAGE_DIMENSIONS_INVALID`, `PHOTO_LIMIT_REACHED`, `PHOTO_SET_BUSY`,
+          `PHOTO_NOT_FOUND`, `PHOTO_SET_MISMATCH`, `MEDIA_UNAVAILABLE`,
+          `STORAGE_UNAVAILABLE`.
+        - Likes (see `/v1/likes*` per endpoint): `ACCOUNT_PAUSED`, `SELF_LIKE`,
+          `TARGET_UNAVAILABLE`, `TARGET_STALE`, `ALREADY_LIKED`,
+          `INCOMING_LIKE_PENDING`, `QUOTA_EXHAUSTED`, `LIKE_NOT_FOUND`,
+          `LIKE_ALREADY_DECIDED`, `ACCEPT_NOT_AVAILABLE`.
+      enum:
+        - UNAUTHENTICATED
+        - TOKEN_REVOKED
+        - INTERNAL_ERROR
+        - NOT_FOUND
+        - ACCOUNT_RESTRICTED
+        - ACCOUNT_NOT_ELIGIBLE
+        - AGE_INELIGIBLE
+        - INVALID_STATE
+        - NO_UPDATES
+        - VALIDATION_ERROR
+        - PROMPT_LIMIT
+        - REVISION_CONFLICT
+        - DUPLICATE_PROMPT
+        - CONCURRENT_EDIT
+        - PROFILE_UNAVAILABLE
+        - DISCOVERY_PAUSED
+        - INVALID_CURSOR
+        - DISCOVERY_SESSION_EXPIRED
+        - DISCOVERY_SESSION_INVALIDATED
+        - IDEMPOTENCY_KEY_REQUIRED
+        - IDEMPOTENCY_KEY_REUSED
+        - UPLOAD_IN_PROGRESS
+        - FILE_REQUIRED
+        - INVALID_MULTIPART
+        - PAYLOAD_TOO_LARGE
+        - UNSUPPORTED_MEDIA_TYPE
+        - INVALID_IMAGE
+        - IMAGE_DIMENSIONS_INVALID
+        - PHOTO_LIMIT_REACHED
+        - PHOTO_SET_BUSY
+        - PHOTO_NOT_FOUND
+        - PHOTO_SET_MISMATCH
+        - MEDIA_UNAVAILABLE
+        - STORAGE_UNAVAILABLE
+        - ACCOUNT_PAUSED
+        - SELF_LIKE
+        - TARGET_UNAVAILABLE
+        - TARGET_STALE
+        - ALREADY_LIKED
+        - INCOMING_LIKE_PENDING
+        - QUOTA_EXHAUSTED
+        - LIKE_NOT_FOUND
+        - LIKE_ALREADY_DECIDED
+        - ACCEPT_NOT_AVAILABLE
 
     UpdatedResponse:
       type: object
@@ -585,16 +692,31 @@ components:
       type: [string, 'null']
       description: At most 100 grapheme clusters after whitespace normalization
 
+    GenderSelfDescription:
+      type: [string, 'null']
+      description: |
+        Optional words of your own next to the gender catalog choice; at most 100
+        grapheme clusters after whitespace normalization, blank clears it. Never
+        used for eligibility, matching or ranking (the catalog choice is the
+        matching category). Owner-only until text review exists: it is not part
+        of `PublicProfile`, whatever `genderDisplay` says.
+
     PromptAnswer:
       type: object
       description: A published answer as other users see it
       additionalProperties: false
-      required: [id, promptId, promptText, text]
+      required: [id, promptId, promptText, text, contentVersion]
       properties:
         id: { type: string }
         promptId: { type: string }
         promptText: { type: string }
-        text: { type: string }
+        text: { type: string, description: Published (approved) text only }
+        contentVersion:
+          type: integer
+          minimum: 1
+          description: |
+            Version of the published text. A like on this answer sends it as
+            `target.contentVersion`; it changes only when a new revision is published.
 
     SelfPromptAnswer:
       type: object
@@ -613,15 +735,16 @@ components:
     SelfProfile:
       type: object
       additionalProperties: false
-      required: [userId, displayName, genderIdentity, genderDisplay, cityId, cityName, stateCode,
-        intention, bio, hometown, hometownDisplay, occupation, occupationDisplay, education,
-        educationDisplay, height, heightDisplay, languages, languagesDisplay, religion,
+      required: [userId, displayName, genderIdentity, genderDisplay, genderSelfDescription, cityId,
+        cityName, stateCode, intention, bio, hometown, hometownDisplay, occupation, occupationDisplay,
+        education, educationDisplay, height, heightDisplay, languages, languagesDisplay, religion,
         religionDisplay, promptAnswers, revision, profileReady]
       properties:
         userId: { type: string }
         displayName: { type: [string, 'null'] }
         genderIdentity: { type: [string, 'null'] }
         genderDisplay: { $ref: '#/components/schemas/Visibility' }
+        genderSelfDescription: { $ref: '#/components/schemas/GenderSelfDescription' }
         cityId: { type: [string, 'null'] }
         cityName: { type: [string, 'null'] }
         stateCode: { type: [string, 'null'] }
@@ -653,11 +776,13 @@ components:
         account status, moderation data, revisions or visibility settings.
         Fields the owner set to private are null (or empty for languages).
         Name, age and location are null only in the owner's preview of an
-        incomplete draft.
+        incomplete draft. Only approved photos and published prompt text
+        appear; the gender self-description is never part of it (owner-only
+        until text review exists).
       additionalProperties: false
       required: [userId, displayName, age, cityName, stateCode, intention, intentionLabel,
         genderIdentity, genderLabel, bio, hometown, occupation, education, height, languages,
-        religion, promptAnswers]
+        religion, promptAnswers, photos]
       properties:
         userId: { type: string }
         displayName: { type: [string, 'null'] }
@@ -679,6 +804,11 @@ components:
           type: array
           maxItems: 3
           items: { $ref: '#/components/schemas/PromptAnswer' }
+        photos:
+          type: array
+          maxItems: 6
+          description: Approved photos only, in the owner's order
+          items: { $ref: '#/components/schemas/PublicPhoto' }
 
     PublicProfileResponse:
       type: object
@@ -696,6 +826,7 @@ components:
         displayName: { $ref: '#/components/schemas/DisplayName' }
         genderIdentity: { type: string, description: Gender catalog ID }
         genderDisplay: { $ref: '#/components/schemas/Visibility' }
+        genderSelfDescription: { $ref: '#/components/schemas/GenderSelfDescription' }
         cityId: { type: string, description: City catalog ID; sets stateCode }
         intention: { type: string, description: Intention catalog ID }
         bio: { type: [string, 'null'], description: At most 500 grapheme clusters }
@@ -801,17 +932,22 @@ components:
           type: array
           items: { $ref: '#/components/schemas/CatalogOption' }
 
-    DiscoveryPhoto:
+    PublicPhoto:
       type: object
-      description: Approved photo of a discoverable candidate; bytes only via the authenticated media route
+      description: |
+        An approved photo in a public profile. Bytes only via the authenticated
+        media route, which rechecks access on every read; never a storage key or URL.
       additionalProperties: false
       required: [id, order, width, height, contentVersion, media]
       properties:
         id: { type: string }
-        order: { type: integer }
+        order: { type: integer, minimum: 0 }
         width: { type: integer }
         height: { type: integer }
-        contentVersion: { type: integer }
+        contentVersion:
+          type: integer
+          minimum: 1
+          description: A like on this photo sends it as `target.contentVersion`
         media:
           type: object
           additionalProperties: false
@@ -822,14 +958,11 @@ components:
 
     DiscoveryCard:
       type: object
+      description: The candidate's public projection (photos are in `profile.photos`)
       additionalProperties: false
-      required: [profile, photos]
+      required: [profile]
       properties:
         profile: { $ref: '#/components/schemas/PublicProfile' }
-        photos:
-          type: array
-          maxItems: 6
-          items: { $ref: '#/components/schemas/DiscoveryPhoto' }
 
     DiscoveryPageResponse:
       type: object
