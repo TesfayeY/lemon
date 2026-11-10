@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../l10n/l10n.dart';
 
 /// Themed text input with label, error, and password toggle.
 class LemonTextField extends StatefulWidget {
@@ -56,7 +57,7 @@ class _LemonTextFieldState extends State<LemonTextField> {
                 icon: Icon(
                   _obscured ? Icons.visibility_off : Icons.visibility,
                   semanticLabel:
-                      _obscured ? 'Show password' : 'Hide password',
+                      _obscured ? context.l10n.showPassword : context.l10n.hidePassword,
                 ),
                 onPressed: () => setState(() => _obscured = !_obscured),
               )
