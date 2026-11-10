@@ -1,5 +1,6 @@
 import type { Db } from 'mongodb';
 import { ensureDiscoveryIndexes } from './modules/discovery/schema.js';
+import { ensureAdminIndexes } from './modules/admin/audit.js';
 
 /**
  * Unique indexes that enforce one-per-owner invariants.
@@ -25,6 +26,7 @@ export async function ensureIndexes(db: Db): Promise<void> {
       { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
     ),
     ensureDiscoveryIndexes(db),
+    ensureAdminIndexes(db),
   ]);
 }
 
