@@ -167,7 +167,7 @@ function setup(options: { maxBytes?: number; interleave?: boolean } = {}): Harne
     firebaseCheck: async () => true,
     routes: [
       createAuthRoutes(db, auth),
-      createProfileRoutes(db, auth),
+      createProfileRoutes(db, auth, { profileAccess: { canViewProfile: async () => true } }),
       createMediaRoutes(db, auth, { MEDIA_MAX_BYTES: options.maxBytes ?? 10 * 1024 * 1024, MEDIA_LOCAL_DIR: 'unused' }, storage),
     ],
   });

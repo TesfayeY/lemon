@@ -2,7 +2,7 @@ import { vi } from 'vitest';
 import type { Auth, DecodedIdToken } from 'firebase-admin/auth';
 import type { Db } from 'mongodb';
 import { createApp } from '../src/app.js';
-import { createProfileRoutes } from '../src/modules/profiles/routes.js';
+import { createProfileRoutes, type ProfileAccess } from '../src/modules/profiles/routes.js';
 import { createCatalogRoutes } from '../src/modules/catalogs/routes.js';
 import { createPreferencesRoutes } from '../src/modules/preferences/routes.js';
 import { createAuthRoutes } from '../src/modules/auth/routes.js';
@@ -30,10 +30,11 @@ const UNIQUE_KEYS: Record<string, { keys: string[]; partial?: (doc: Record<strin
   promptAnswers: [{ keys: ['ownerId', 'promptId'] }, { keys: ['ownerId', 'slot'], partial: (doc) => doc['slot'] !== undefined }],
 };
 
-/** Equality plus the few operators the routes use ($ne) */
+/** Equality plus the few operators the routes use ($ne, $in) */
 function matchesFilter(doc: Record<string, unknown>, filter: Record<string, unknown>): boolean {
   return Object.entries(filter).every(([k, v]) => {
     if (v !== null && typeof v === 'object' && '$ne' in v) return (doc[k] ?? null) !== (v as { $ne: unknown }).$ne;
+    if (v !== null && typeof v === 'object' && '$in' in v) return (v as { $in: unknown[] }).$in.includes(doc[k]);
     return doc[k] === v;
   });
 }
@@ -131,7 +132,15 @@ export function createMultiUserAuth(): Auth {
   } as unknown as Auth;
 }
 
-export function buildApp(auth?: Auth, db?: Db) {
+/**
+ * The in-memory db cannot run the discovery service, so these tests let every
+ * active, ready viewer through the contextual check. Real profile access
+ * (discoverable, incoming likes, 404s) is tested against MongoDB in
+ * public-profile.test.ts.
+ */
+export const allowAllProfileAccess: ProfileAccess = { canViewProfile: async () => true };
+
+export function buildApp(auth?: Auth, db?: Db, profileAccess: ProfileAccess = allowAllProfileAccess) {
   const a = auth ?? createMockAuth();
   const d = db ?? createInMemoryDb();
   return createApp({
@@ -139,7 +148,7 @@ export function buildApp(auth?: Auth, db?: Db) {
     firebaseCheck: async () => true,
     routes: [
       createAuthRoutes(d, a),
-      createProfileRoutes(d, a),
+      createProfileRoutes(d, a, { profileAccess }),
       createCatalogRoutes(),
       createPreferencesRoutes(d, a),
     ],
