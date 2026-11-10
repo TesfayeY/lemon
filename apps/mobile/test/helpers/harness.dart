@@ -6,10 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lemon/app/app.dart';
 import 'package:lemon/app/config.dart';
 import 'package:lemon/app/providers.dart';
-import 'package:lemon/core/api/id_token_source.dart';
-import 'package:lemon/core/api/lemon_api_client.dart';
+import 'package:lemon/features/auth/application/auth_controller.dart';
 import 'package:lemon/features/profile/data/photo_picker.dart';
 
+import 'fake_auth.dart';
 import 'fake_backend.dart';
 
 /// A 1x1 transparent PNG, standing in for every media image in tests.
@@ -37,21 +37,19 @@ class FakePhotoPicker implements PhotoPicker {
 /// Fixed "today" for date rules: 10 November 2026.
 DateTime fixedToday() => DateTime(2026, 11, 10);
 
-LemonApiClient apiFor(FakeBackend backend) => LemonApiClient(
-  baseUrl: Uri.parse('http://lemon.test'),
-  tokens: const StaticIdTokenSource('test-token'),
-  httpClient: backend.client,
-);
-
-/// Pumps the app (or [home]) against [backend] with test doubles.
+/// Pumps the app (or [home]) against [backend] with test doubles. [auth]
+/// defaults to a signed-in person with a verified email; API calls get their
+/// token through the real auth controller.
 Future<void> pumpLemon(
   WidgetTester tester, {
   required FakeBackend backend,
   Widget? home,
   FakePhotoPicker? picker,
+  FakeAuthRepository? auth,
   bool showSensitiveFields = false,
   double textScale = 1,
   Size? surfaceSize,
+  bool settle = true,
 }) async {
   if (surfaceSize != null) {
     await tester.binding.setSurfaceSize(surfaceSize);
@@ -70,10 +68,10 @@ Future<void> pumpLemon(
             showSensitiveFields: showSensitiveFields,
           ),
         ),
-        idTokenSourceProvider.overrideWithValue(
-          const StaticIdTokenSource('test-token'),
+        authRepositoryProvider.overrideWithValue(
+          auth ?? FakeAuthRepository(),
         ),
-        apiClientProvider.overrideWithValue(apiFor(backend)),
+        httpClientProvider.overrideWithValue(backend.client),
         photoPickerProvider.overrideWithValue(picker ?? FakePhotoPicker()),
         mediaImageLoaderProvider.overrideWithValue(
           (path) async => MemoryImage(transparentPng),
@@ -83,7 +81,18 @@ Future<void> pumpLemon(
       child: LemonApp(home: home),
     ),
   );
-  await tester.pumpAndSettle();
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+  }
+}
+
+/// Scrolls until the text field [finder] is built, then types [text].
+Future<void> enterVisible(WidgetTester tester, Finder finder, String text) async {
+  await scrollToVisible(tester, finder);
+  await tester.enterText(finder, text);
+  await tester.pump();
 }
 
 /// Scrolls the page's list (not a text field's internal scrollable) until

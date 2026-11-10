@@ -43,12 +43,14 @@ void main() {
   LemonApiClient clientFor(
     Future<http.Response> Function(http.Request request) handler, {
     IdTokenSource? tokens,
+    void Function()? onUnauthorized,
   }) {
     sent = [];
     bodies = [];
     return LemonApiClient(
       baseUrl: Uri.parse('http://lemon.test'),
       tokens: tokens ?? RecordingTokens(),
+      onUnauthorized: onUnauthorized,
       httpClient: MockClient((request) {
         sent.add(request);
         final isJson = request.headers['content-type']?.contains('json') ?? false;
@@ -339,6 +341,42 @@ void main() {
         'Bearer fresh',
       ]);
     });
+
+    test('a 401 after the refreshed token reports the session as rejected', () async {
+      var rejected = 0;
+      final api = clientFor(
+        (_) async => json(
+          '{"error":{"code":"TOKEN_REVOKED","message":"revoked","retryable":false},"requestId":"r"}',
+          401,
+        ),
+        tokens: RecordingTokens(['stale', 'fresh']),
+        onUnauthorized: () => rejected++,
+      );
+
+      await expectLater(
+        api.getAccount(),
+        throwsA(isA<ApiException>().having((e) => e.code, 'code', 'TOKEN_REVOKED')),
+      );
+      expect(sent, hasLength(2));
+      expect(rejected, 1);
+    });
+
+    test('a 401 that a refreshed token fixes does not end the session', () async {
+      var rejected = 0;
+      var call = 0;
+      final api = clientFor((_) async {
+        call++;
+        return call == 1
+            ? json(
+                '{"error":{"code":"UNAUTHENTICATED","message":"expired","retryable":false},"requestId":"r"}',
+                401,
+              )
+            : json(contractFixture('account.json'));
+      }, onUnauthorized: () => rejected++);
+
+      await api.getAccount();
+      expect(rejected, 0);
+    });
   });
 
   group('changedFields', () {
@@ -358,30 +396,6 @@ void main() {
 
     test('clearing an optional field sends null', () {
       expect(changedFields({'bio': 'Old'}, {'bio': null}), {'bio': null});
-    });
-  });
-
-  group('EmulatorPasswordTokenSource', () {
-    test('caches the token until shortly before it expires', () async {
-      var now = DateTime(2026, 11, 10, 9);
-      var signIns = 0;
-      final source = EmulatorPasswordTokenSource(
-        host: '127.0.0.1:9099',
-        email: 'hanna@example.test',
-        password: 'not-a-real-password',
-        clock: () => now,
-        client: MockClient((request) async {
-          signIns++;
-          expect(request.url.path, contains('accounts:signInWithPassword'));
-          return json('{"idToken":"t$signIns","expiresIn":"3600"}');
-        }),
-      );
-
-      expect(await source.idToken(), 't1');
-      expect(await source.idToken(), 't1');
-      now = now.add(const Duration(minutes: 59, seconds: 30));
-      expect(await source.idToken(), 't2');
-      expect(await source.idToken(forceRefresh: true), 't3');
     });
   });
 }

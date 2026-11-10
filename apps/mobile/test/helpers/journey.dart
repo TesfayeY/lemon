@@ -1,10 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_auth.dart';
 import 'harness.dart';
 
 /// Steps of the onboarding happy path, shared by the widget journey test and
 /// the on-device integration test. Uses fictional data only.
+
+/// From the welcome screen, signs in with the fictional test account.
+Future<void> signInFromWelcome(WidgetTester tester) async {
+  expect(find.text('I already have an account'), findsOneWidget);
+  await tapText(tester, 'I already have an account');
+  await enterVisible(tester, find.widgetWithText(TextField, 'Email'), testEmail);
+  await enterVisible(
+    tester,
+    find.widgetWithText(TextField, 'Password'),
+    testPassword,
+  );
+  await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Sign in'));
+}
 
 Future<void> tapText(WidgetTester tester, String text) =>
     tapVisible(tester, find.text(text));
