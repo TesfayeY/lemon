@@ -9,6 +9,7 @@ import { createProfileRoutes } from './modules/profiles/routes.js';
 import { createPreferencesRoutes } from './modules/preferences/routes.js';
 import { createCatalogRoutes } from './modules/catalogs/routes.js';
 import { createMediaRoutes } from './modules/media/routes.js';
+import { createLikesRoutes } from './modules/likes/routes.js';
 
 async function main() {
   const config = loadConfig();
@@ -37,6 +38,7 @@ async function main() {
       createPreferencesRoutes(db, auth),
       createCatalogRoutes(),
       createMediaRoutes(db, auth, config),
+      createLikesRoutes(db, auth, config),
     ],
   });
 
