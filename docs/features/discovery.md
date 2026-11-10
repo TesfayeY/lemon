@@ -48,9 +48,8 @@ Shared files have small additive edits only: `src/index.ts` (route), `src/indexe
   - Idempotent: a retry or a parallel request keeps one pass with its original expiry. A pass whose cooldown has ended is renewed.
   - Cooldown is `PASS_COOLDOWN_DAYS` (default 30).
   - Any existing user can be passed, so the response never reveals whether someone is blocked or unavailable. An unknown ID gets 404 `PROFILE_UNAVAILABLE`, and passing yourself gets 422.
-- **Responses:** each card is `{profile, photos}`.
-  - `profile` reuses the profiles public projection (`toPublicProfileDTO`).
-  - `photos` lists only approved photos (`toPublicPhotoDTO`), which link to the authenticated `/v1/media/{id}/{variant}` route that rechecks access on every read.
+- **Responses:** each card is `{profile}`.
+  - `profile` is the shared public projection (`loadPublicProfiles`), the same one `GET /v1/profiles/:id` returns. Its `photos` list only approved photos, which link to the authenticated `/v1/media/{id}/{variant}` route that rechecks access on every read. See `public-profile-projection.md`.
   - Live responses are validated against the OpenAPI schemas, which use `additionalProperties: false`.
 - **Indexes** (`ensureDiscoveryIndexes`):
   - `passes {viewerId, candidateId}` unique, and a TTL on `passes.expiresAt`.
