@@ -6,12 +6,21 @@
  * - report history, moderation fields
  * - raw coordinates, device tokens
  * - private preferences, hidden optional fields
+ * - storage keys, or photos that are not approved
+ * - prompt text that is not published (pending or rejected submissions)
+ * - unreviewed free text (the gender self-description stays owner-only)
+ *
+ * The public projection is the single source of truth for what other people
+ * see: `GET /v1/profiles/:id`, the owner's preview and every Discover card use it.
  */
 
+import type { Db } from 'mongodb';
 import type { ProfileDocument, PromptAnswerDocument } from './schema.js';
 import type { UserDocument } from '../auth/account.js';
 import { calculateAge } from '../auth/adult-gate.js';
 import { findCity, findGender, findIntention, findPrompt } from '../catalogs/data.js';
+import { toPublicPhotoDTO, type PublicPhotoDTO } from '../media/dto.js';
+import { MAX_PHOTOS, PhotoState, type PhotoDocument } from '../media/schema.js';
 
 /** What the owner sees about their own profile */
 export interface SelfProfileDTO {
@@ -19,6 +28,8 @@ export interface SelfProfileDTO {
   displayName: string | null;
   genderIdentity: string | null;
   genderDisplay: string;
+  /** Optional free text next to the catalog choice; owner-only until text review exists */
+  genderSelfDescription: string | null;
   cityId: string | null;
   cityName: string | null;
   stateCode: string | null;
@@ -64,7 +75,8 @@ export interface PublicProfileDTO {
   languages: string[]; // only if languagesDisplay === 'public'
   religion: string | null; // only if religionDisplay === 'public'
   promptAnswers: PromptAnswerDTO[];
-  // photos will be added when media module is built
+  /** Approved photos only, in the owner's order; bytes only via the authenticated media route */
+  photos: PublicPhotoDTO[];
 }
 
 /** A published prompt answer as other users see it */
@@ -73,6 +85,8 @@ export interface PromptAnswerDTO {
   promptId: string;
   promptText: string;
   text: string;
+  /** Version of the published text (`publishedRevision`); a like on this answer quotes it */
+  contentVersion: number;
 }
 
 /** The owner's view of an answer, including any submission awaiting review */
@@ -97,6 +111,7 @@ export function toSelfProfileDTO(
     displayName: profile.displayName,
     genderIdentity: profile.genderIdentity,
     genderDisplay: profile.genderDisplay,
+    genderSelfDescription: profile.genderSelfDescription ?? null,
     cityId: profile.cityId,
     cityName: city?.name ?? null,
     stateCode: profile.stateCode,
@@ -120,10 +135,15 @@ export function toSelfProfileDTO(
   };
 }
 
+/**
+ * Build the public projection. It filters its own inputs (published answers,
+ * approved photos of this owner), so a caller that passes too much cannot leak it.
+ */
 export function toPublicProfileDTO(
   profile: ProfileDocument,
   user: UserDocument,
-  answers: PromptAnswerDocument[],
+  answers: readonly PromptAnswerDocument[],
+  photos: readonly PhotoDocument[],
 ): PublicProfileDTO {
   const city = profile.cityId ? findCity(profile.cityId) : null;
   const intention = profile.intention ? findIntention(profile.intention) : null;
@@ -146,8 +166,22 @@ export function toPublicProfileDTO(
     height: profile.heightDisplay === 'public' ? profile.height : null,
     languages: profile.languagesDisplay === 'public' ? profile.languages : [],
     religion: profile.religionDisplay === 'public' ? profile.religion : null,
-    promptAnswers: answers.flatMap(a => (a.approvedText === null ? [] : [toPromptAnswerDTO(a, a.approvedText)])),
+    promptAnswers: answers
+      .filter(a => a.ownerId === profile.userId && a.approvedText !== null)
+      .sort(bySlot)
+      .map(a => toPromptAnswerDTO(a, a.approvedText!)),
+    photos: photos
+      .filter(p => p.ownerId === profile.userId && p.state === PhotoState.APPROVED)
+      .sort((a, b) => a.order - b.order)
+      .slice(0, MAX_PHOTOS)
+      .map(toPublicPhotoDTO),
   };
+}
+
+/** Slot order; answers saved before slots existed (until migrated) go last, oldest first */
+function bySlot(a: PromptAnswerDocument, b: PromptAnswerDocument): number {
+  return (a.slot ?? Number.MAX_SAFE_INTEGER) - (b.slot ?? Number.MAX_SAFE_INTEGER)
+    || a.createdAt.getTime() - b.createdAt.getTime();
 }
 
 function toPromptAnswerDTO(answer: PromptAnswerDocument, text: string): PromptAnswerDTO {
@@ -156,6 +190,8 @@ function toPromptAnswerDTO(answer: PromptAnswerDocument, text: string): PromptAn
     promptId: answer.promptId,
     promptText: findPrompt(answer.promptId)?.text ?? '',
     text,
+    // The likes service compares a prompt like's contentVersion with this value
+    contentVersion: answer.publishedRevision,
   };
 }
 
@@ -169,4 +205,33 @@ function toSelfPromptAnswerDTO(answer: PromptAnswerDocument): SelfPromptAnswerDT
     state: answer.state,
     revision: answer.revision,
   };
+}
+
+/**
+ * Public projections for several owners in four batched reads. Owners without
+ * a user or profile document are absent from the map. This decides only what
+ * is visible; callers decide who may see whom.
+ */
+export async function loadPublicProfiles(db: Db, userIds: readonly string[]): Promise<Map<string, PublicProfileDTO>> {
+  const ids = [...new Set(userIds)];
+  if (ids.length === 0) return new Map();
+  const [userDocs, profileDocs, answerDocs, photoDocs] = await Promise.all([
+    db.collection<UserDocument>('users').find({ _id: { $in: ids } }).toArray(),
+    db.collection<ProfileDocument>('profiles').find({ userId: { $in: ids } }).toArray(),
+    db.collection<PromptAnswerDocument>('promptAnswers').find({ ownerId: { $in: ids }, approvedText: { $ne: null } }).toArray(),
+    db.collection<PhotoDocument>('photos').find({ ownerId: { $in: ids }, state: PhotoState.APPROVED }).toArray(),
+  ]);
+  const userById = new Map(userDocs.map(u => [u._id, u]));
+  const projected = new Map<string, PublicProfileDTO>();
+  for (const profile of profileDocs) {
+    const user = userById.get(profile.userId);
+    if (!user) continue;
+    projected.set(profile.userId, toPublicProfileDTO(
+      profile,
+      user,
+      answerDocs.filter(a => a.ownerId === profile.userId),
+      photoDocs.filter(p => p.ownerId === profile.userId),
+    ));
+  }
+  return projected;
 }
