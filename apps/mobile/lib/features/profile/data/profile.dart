@@ -30,6 +30,7 @@ class PromptAnswer {
     required this.promptId,
     required this.promptText,
     required this.text,
+    required this.contentVersion,
   });
 
   factory PromptAnswer.fromJson(Map<String, dynamic> json) => PromptAnswer(
@@ -37,6 +38,7 @@ class PromptAnswer {
     promptId: json['promptId'] as String,
     promptText: json['promptText'] as String,
     text: json['text'] as String,
+    contentVersion: json['contentVersion'] as int,
   );
 
   final String id;
@@ -44,11 +46,55 @@ class PromptAnswer {
   final String promptText;
   final String text;
 
+  /// Published revision; a like on this answer must send it back.
+  final int contentVersion;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'promptId': promptId,
     'promptText': promptText,
     'text': text,
+    'contentVersion': contentVersion,
+  };
+}
+
+/// An approved photo on a public profile. [media] holds authenticated API
+/// paths per variant (e.g. `thumb`, `display`), never storage URLs.
+class PublicPhoto {
+  const PublicPhoto({
+    required this.id,
+    required this.order,
+    required this.width,
+    required this.height,
+    required this.contentVersion,
+    required this.media,
+  });
+
+  factory PublicPhoto.fromJson(Map<String, dynamic> json) => PublicPhoto(
+    id: json['id'] as String,
+    order: json['order'] as int,
+    width: json['width'] as int,
+    height: json['height'] as int,
+    contentVersion: json['contentVersion'] as int,
+    media: (json['media'] as Map<String, dynamic>).cast<String, String>(),
+  );
+
+  final String id;
+  final int order;
+  final int width;
+  final int height;
+
+  /// A like on this photo must send it back.
+  final int contentVersion;
+  final Map<String, String> media;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'order': order,
+    'width': width,
+    'height': height,
+    'contentVersion': contentVersion,
+    'media': media,
   };
 }
 
@@ -104,6 +150,7 @@ class SelfProfile {
     required this.displayName,
     required this.genderIdentity,
     required this.genderDisplay,
+    required this.genderSelfDescription,
     required this.cityId,
     required this.cityName,
     required this.stateCode,
@@ -131,6 +178,7 @@ class SelfProfile {
     displayName: json['displayName'] as String?,
     genderIdentity: json['genderIdentity'] as String?,
     genderDisplay: _visibility(json['genderDisplay']),
+    genderSelfDescription: json['genderSelfDescription'] as String?,
     cityId: json['cityId'] as String?,
     cityName: json['cityName'] as String?,
     stateCode: json['stateCode'] as String?,
@@ -159,6 +207,9 @@ class SelfProfile {
   final String? displayName;
   final String? genderIdentity;
   final FieldVisibility genderDisplay;
+
+  /// Owner-only; never part of the public profile or discovery.
+  final String? genderSelfDescription;
   final String? cityId;
   final String? cityName;
   final String? stateCode;
@@ -189,6 +240,7 @@ class SelfProfile {
     'displayName': displayName,
     'genderIdentity': genderIdentity,
     'genderDisplay': genderDisplay.wire,
+    'genderSelfDescription': genderSelfDescription,
     'cityId': cityId,
     'cityName': cityName,
     'stateCode': stateCode,
@@ -236,6 +288,7 @@ class PublicProfile {
     required this.languages,
     required this.religion,
     required this.promptAnswers,
+    required this.photos,
   });
 
   factory PublicProfile.fromJson(Map<String, dynamic> json) => PublicProfile(
@@ -257,6 +310,9 @@ class PublicProfile {
     religion: json['religion'] as String?,
     promptAnswers: (json['promptAnswers'] as List<dynamic>)
         .map((e) => PromptAnswer.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    photos: (json['photos'] as List<dynamic>)
+        .map((e) => PublicPhoto.fromJson(e as Map<String, dynamic>))
         .toList(),
   );
 
@@ -280,6 +336,9 @@ class PublicProfile {
   final String? religion;
   final List<PromptAnswer> promptAnswers;
 
+  /// Approved photos only, in display order.
+  final List<PublicPhoto> photos;
+
   Map<String, dynamic> toJson() => {
     'userId': userId,
     'displayName': displayName,
@@ -298,5 +357,6 @@ class PublicProfile {
     'languages': languages,
     'religion': religion,
     'promptAnswers': promptAnswers.map((a) => a.toJson()).toList(),
+    'photos': photos.map((p) => p.toJson()).toList(),
   };
 }
