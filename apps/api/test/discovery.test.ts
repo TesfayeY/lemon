@@ -377,7 +377,9 @@ describe('GET /v1/discovery: pair exclusions', () => {
     for (const n of ['liked-pending', 'liked-declined', 'liked-accepted', 'likes-me', 'untouched']) await man(n);
     const like = (fromUserId: string, toUserId: string, state: string) => ({
       _id: `${fromUserId}->${toUserId}`, fromUserId, toUserId, state,
-      target: { kind: 'photo', id: `${toUserId}-photo-0`, version: 1 }, createdAt: new Date(),
+      target: { kind: 'photo', id: `${toUserId}-photo-0`, contentVersion: 1 },
+      contextSnapshot: {}, idempotencyKey: `key-${fromUserId}-${toUserId}`,
+      createdAt: new Date(), updatedAt: new Date(),
     });
     await db.collection('likes').insertMany([
       like('viewer', 'liked-pending', 'pending'),
@@ -633,7 +635,7 @@ describe('Discovery sessions and cursors', () => {
     await db.collection('users').deleteOne({ _id: order[2] as never });
     await db.collection('profiles').deleteOne({ userId: order[2] });
     blockedPairs.add(pairKey(order[3]!, 'viewer'));
-    await db.collection('likes').insertOne({ _id: 'l1' as never, fromUserId: 'viewer', toUserId: order[4], state: 'pending' });
+    await db.collection('likes').insertOne({ _id: 'l1' as never, fromUserId: 'viewer', toUserId: order[4], state: 'pending', idempotencyKey: 'key-l1' });
 
     const p2 = await discover(app, 'viewer', p1.body.meta.nextCursor);
     expect(ids(p2)).toEqual([order[5]]);
@@ -763,7 +765,7 @@ describe('isDiscoverable', () => {
     await man('ok');
     await man('far', { cityId: 'harbor-xb' });
     await man('liked-me');
-    await db.collection('likes').insertOne({ _id: 'l' as never, fromUserId: 'liked-me', toUserId: 'viewer', state: 'pending' });
+    await db.collection('likes').insertOne({ _id: 'l' as never, fromUserId: 'liked-me', toUserId: 'viewer', state: 'pending', idempotencyKey: 'key-l' });
     const service = createDiscoveryService(db, { cursorSecret: SECRET, now: () => clock.now, catalog, exclusions });
     const viewer = (await db.collection<UserDocument>('users').findOne({ _id: 'viewer' }))!;
     expect(await service.isDiscoverable(viewer, 'ok')).toBe(true);
