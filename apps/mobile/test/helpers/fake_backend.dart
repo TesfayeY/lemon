@@ -310,7 +310,20 @@ class FakeBackend {
               'promptId': a['promptId'],
               'promptText': _promptText(a['promptId']! as String),
               'text': a['approvedText'],
+              'contentVersion': a['publishedRevision'] ?? a['revision'] ?? 1,
             },
+      ],
+      'photos': [
+        for (final p in photos.where((p) => p['state'] == 'approved').toList()
+          ..sort((a, b) => (a['order']! as int).compareTo(b['order']! as int)))
+          {
+            'id': p['id'],
+            'order': p['order'],
+            'width': p['width'],
+            'height': p['height'],
+            'contentVersion': p['contentVersion'],
+            'media': p['media'],
+          },
       ],
     };
   }
