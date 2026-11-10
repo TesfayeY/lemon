@@ -14,6 +14,10 @@ const envSchema = z.object({
   // Media
   MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   MEDIA_LOCAL_DIR: z.string().min(1).default('.local-media'),
+
+  // Discovery (cursor HMAC secret is required in production; see modules/discovery/cursor.ts)
+  DISCOVERY_CURSOR_SECRET: z.string().min(32).optional(),
+  PASS_COOLDOWN_DAYS: z.coerce.number().int().positive().default(30),
 });
 
 export type Env = z.infer<typeof envSchema>;
