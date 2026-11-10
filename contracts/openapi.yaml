@@ -305,6 +305,77 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /v1/discovery:
+    get:
+      summary: Discover page (new session, or continue one with a cursor)
+      description: |
+        Without `cursor`, starts a short-lived discovery session: a bounded,
+        server-shuffled snapshot of mutually eligible candidates tied to the
+        viewer's preferences revision and residence city. With `cursor`,
+        continues that session. Eligibility (status, readiness, pause, mutual
+        gender/interest, mutual age, mutual US city/state/nationwide scope,
+        likes, passes, blocks and other pair exclusions) is rechecked for every
+        page, and the cursor tracks scanned positions, so pages never repeat or
+        skip a candidate. Order is a uniform shuffle; nothing is ranked.
+
+        `status`:
+        - `more`: call again with `meta.nextCursor`. A page can be short, even
+          empty, when many scanned candidates dropped out.
+        - `end`: the session is fully scanned; start a new one later.
+        - `empty`: nobody matches the viewer's current filters. Filters are
+          never widened by the server; offer a user-triggered filter change.
+
+        Errors: `INVALID_CURSOR` (400, malformed, tampered or another person's
+        cursor), `DISCOVERY_SESSION_EXPIRED` and `DISCOVERY_SESSION_INVALIDATED`
+        (409, retryable: restart without a cursor), `ACCOUNT_NOT_ELIGIBLE` and
+        `DISCOVERY_PAUSED` (403).
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque signed cursor from `meta.nextCursor`
+          schema: { type: string, maxLength: 512 }
+      responses:
+        '200':
+          description: One page of candidates
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryPageResponse' }
+        '400': { $ref: '#/components/responses/InvalidCursor' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/DiscoverySessionStale' }
+
+  /v1/passes:
+    post:
+      summary: Pass on a candidate for the cooldown (default 30 days)
+      description: |
+        Idempotent per viewer and candidate: repeating an active pass returns it
+        unchanged; a pass whose cooldown has ended is renewed. Any existing user
+        may be passed, so the response never reveals whether the candidate is
+        blocked, paused or otherwise unavailable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [candidateId]
+              properties:
+                candidateId: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Pass recorded (or already active)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PassResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
   # --- Likes (Phase 08) -----------------------------------------------------
   /v1/likes:
     post:
@@ -507,6 +578,16 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     ValidationError:
       description: One or more fields are invalid
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InvalidCursor:
+      description: Malformed, tampered or not the caller's cursor (INVALID_CURSOR)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    DiscoverySessionStale:
+      description: Session expired or preferences changed; restart without a cursor
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -887,6 +968,75 @@ components:
         languages:
           type: array
           items: { $ref: '#/components/schemas/CatalogOption' }
+
+    DiscoveryPhoto:
+      type: object
+      description: Approved photo of a discoverable candidate; bytes only via the authenticated media route
+      additionalProperties: false
+      required: [id, order, width, height, contentVersion, media]
+      properties:
+        id: { type: string }
+        order: { type: integer }
+        width: { type: integer }
+        height: { type: integer }
+        contentVersion: { type: integer }
+        media:
+          type: object
+          additionalProperties: false
+          required: [thumb, display]
+          properties:
+            thumb: { type: string, pattern: '^/v1/media/[^/]+/thumb$' }
+            display: { type: string, pattern: '^/v1/media/[^/]+/display$' }
+
+    DiscoveryCard:
+      type: object
+      additionalProperties: false
+      required: [profile, photos]
+      properties:
+        profile: { $ref: '#/components/schemas/PublicProfile' }
+        photos:
+          type: array
+          maxItems: 6
+          items: { $ref: '#/components/schemas/DiscoveryPhoto' }
+
+    DiscoveryPageResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, status, preferencesRevision]
+          properties:
+            items:
+              type: array
+              maxItems: 10
+              items: { $ref: '#/components/schemas/DiscoveryCard' }
+            status: { type: string, enum: [more, end, empty] }
+            preferencesRevision: { type: integer, minimum: 1 }
+        meta:
+          type: object
+          additionalProperties: false
+          required: [requestId, nextCursor]
+          properties:
+            requestId: { type: string }
+            nextCursor: { type: [string, 'null'] }
+
+    PassResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [candidateId, passedAt, expiresAt]
+          properties:
+            candidateId: { type: string }
+            passedAt: { type: string, format: date-time }
+            expiresAt: { type: string, format: date-time }
+        meta: { $ref: '#/components/schemas/Meta' }
 
     # --- Likes (Phase 08) ---------------------------------------------------
     LikeErrorResponse:

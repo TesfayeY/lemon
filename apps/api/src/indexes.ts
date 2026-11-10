@@ -1,4 +1,5 @@
 import type { Db } from 'mongodb';
+import { ensureDiscoveryIndexes } from './modules/discovery/schema.js';
 import { ensureQuotaIndexes } from './modules/likes/quota.js';
 
 /**
@@ -24,6 +25,7 @@ export async function ensureIndexes(db: Db): Promise<void> {
       { ownerId: 1, idempotencyKey: 1 },
       { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
     ),
+    ensureDiscoveryIndexes(db),
     // Likes: one per direction ever in v1, sender-scoped idempotency, incoming list
     db.collection('likes').createIndex({ fromUserId: 1, toUserId: 1 }, { unique: true }),
     db.collection('likes').createIndex({ fromUserId: 1, idempotencyKey: 1 }, { unique: true }),
