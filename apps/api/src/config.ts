@@ -14,6 +14,9 @@ const envSchema = z.object({
   // Media
   MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   MEDIA_LOCAL_DIR: z.string().min(1).default('.local-media'),
+
+  // Likes: new likes per UTC day (P-10 proposes 8, pending owner confirmation)
+  LIKES_PER_UTC_DAY: z.coerce.number().int().min(0).default(8),
 });
 
 export type Env = z.infer<typeof envSchema>;
