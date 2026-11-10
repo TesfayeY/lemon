@@ -202,9 +202,23 @@ class _StatusCard extends StatelessWidget {
             for (final requirement in readiness.missing)
               Padding(
                 padding: const EdgeInsets.only(top: LemonSpacing.xs),
-                child: Text(
-                  '• ${requirementLabel(l10n, requirement)}',
-                  style: LemonTypography.body,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const ExcludeSemantics(
+                      child: Padding(
+                        padding: EdgeInsets.only(top: 4),
+                        child: Icon(Icons.circle_outlined, size: 14),
+                      ),
+                    ),
+                    const SizedBox(width: LemonSpacing.sm),
+                    Expanded(
+                      child: Text(
+                        requirementLabel(l10n, requirement),
+                        style: LemonTypography.body,
+                      ),
+                    ),
+                  ],
                 ),
               ),
           if (account.discoverPaused) ...[

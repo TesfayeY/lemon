@@ -363,7 +363,12 @@ class _PhotoTile extends StatelessWidget {
             child: media == null
                 ? const ColoredBox(
                     color: LemonColors.softAccent,
-                    child: Center(child: CircularProgressIndicator()),
+                    child: Center(
+                      child: Icon(
+                        Icons.hourglass_empty,
+                        color: LemonColors.textSecondary,
+                      ),
+                    ),
                   )
                 : MediaImage(
                     path: media.thumb,

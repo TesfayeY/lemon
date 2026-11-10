@@ -71,13 +71,15 @@ class PublicProfileView extends StatelessWidget {
         const SizedBox(height: LemonSpacing.base),
         Semantics(
           header: true,
-          child: Text.rich(
-            TextSpan(
-              children: [
-                TextSpan(text: name ?? l10n.youNameFallback),
-                if (age != null) TextSpan(text: ', ${l10n.previewAge(age)}'),
-              ],
-            ),
+          child: Text(
+            switch ((name, age)) {
+              (final String name, final int age) => l10n.previewNameAge(
+                name,
+                age,
+              ),
+              (final String name, null) => name,
+              _ => l10n.previewNoName,
+            },
             style: LemonTypography.title,
           ),
         ),

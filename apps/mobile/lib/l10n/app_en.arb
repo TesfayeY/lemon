@@ -242,8 +242,11 @@
   "previewNote": "This is how other people see you. Private details and anything still in review are hidden.",
   "previewNoPhotos": "No approved photos yet.",
   "previewNoName": "Add your first name to finish your profile.",
-  "previewAge": "{age}",
-  "@previewAge": { "placeholders": { "age": { "type": "int" } } },
+  "previewNameAge": "{name}, {age}",
+  "@previewNameAge": {
+    "description": "First name and age at the top of a profile",
+    "placeholders": { "name": { "type": "String" }, "age": { "type": "int" } }
+  },
 
   "youTitle": "You",
   "youStatusLive": "Your profile is visible",
