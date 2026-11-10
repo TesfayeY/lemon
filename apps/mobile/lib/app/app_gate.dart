@@ -5,7 +5,9 @@ import '../core/api/api_exception.dart';
 import '../core/l10n/l10n.dart';
 import '../core/theme/lemon_spacing.dart';
 import '../core/widgets/async_loader.dart';
+import '../core/widgets/lemon_button.dart';
 import '../core/widgets/state_views.dart';
+import '../features/auth/application/auth_controller.dart';
 import '../features/onboarding/data/account.dart';
 import '../features/onboarding/ui/onboarding_flow.dart';
 import '../features/profile/ui/form_host.dart';
@@ -81,13 +83,13 @@ class _AppGateState extends ConsumerState<AppGate> {
 
 enum _GateMessage { signedOut, restricted }
 
-class _MessageScreen extends StatelessWidget {
+class _MessageScreen extends ConsumerWidget {
   const _MessageScreen({required this.kind});
 
   final _GateMessage kind;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final l10n = context.l10n;
     final (title, body) = switch (kind) {
       _GateMessage.signedOut => (
@@ -103,7 +105,18 @@ class _MessageScreen extends StatelessWidget {
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(LemonSpacing.lg),
-          children: [SectionHeader(title: title, subtitle: body)],
+          children: [
+            SectionHeader(title: title, subtitle: body),
+            // Signing out leads back to the welcome and sign-in screens
+            LemonButton(
+              label: kind == _GateMessage.signedOut
+                  ? l10n.gateSignIn
+                  : l10n.signOut,
+              isOutlined: kind == _GateMessage.restricted,
+              onPressed: () =>
+                  ref.read(authControllerProvider.notifier).signOut(),
+            ),
+          ],
         ),
       ),
     );

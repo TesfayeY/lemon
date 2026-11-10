@@ -2,14 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../core/l10n/l10n.dart';
 import '../core/theme/lemon_theme.dart';
-import 'app_gate.dart';
+import '../features/auth/ui/auth_gate.dart';
 import 'config.dart';
 
 /// Root application widget. Expects a `ProviderScope` above it.
 class LemonApp extends StatelessWidget {
   const LemonApp({super.key, this.home});
 
-  /// Overrides the start screen (tests and previews); defaults to [AppGate].
+  /// Overrides the start screen (tests and previews); defaults to [AuthGate].
   final Widget? home;
 
   @override
@@ -20,7 +20,7 @@ class LemonApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
-      home: home ?? const AppGate(),
+      home: home ?? const AuthGate(),
     );
   }
 }

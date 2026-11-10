@@ -9,6 +9,8 @@ import '../../../core/theme/lemon_typography.dart';
 import '../../../core/widgets/async_loader.dart';
 import '../../../core/widgets/inline_message.dart';
 import '../../../core/widgets/lemon_card.dart';
+import '../../auth/application/auth_controller.dart';
+import '../../auth/ui/auth_widgets.dart';
 import '../../onboarding/data/account.dart';
 import '../../onboarding/ui/readiness_view.dart';
 import '../data/profile.dart';
@@ -125,6 +127,8 @@ class _YouScreenState extends ConsumerState<YouScreen> {
                 title: l10n.youEditAbout,
                 onTap: () => _open(_sectionScreen(ProfileSection.about)),
               ),
+              const SizedBox(height: LemonSpacing.lg),
+              const _AccountSection(),
             ],
           ),
         );
@@ -227,6 +231,40 @@ class _StatusCard extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// Settings live inside You: the sign-in email (shown only to its owner)
+/// and sign out.
+class _AccountSection extends ConsumerWidget {
+  const _AccountSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = context.l10n;
+    final email = ref.watch(
+      authControllerProvider.select((s) => s.user?.email),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Semantics(
+          header: true,
+          child: Text(l10n.youSectionAccount, style: LemonTypography.section),
+        ),
+        if (email != null) ...[
+          const SizedBox(height: LemonSpacing.sm),
+          Text(l10n.youSignedInAs(email), style: LemonTypography.body),
+        ],
+        const SizedBox(height: LemonSpacing.sm),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.logout, color: LemonColors.primary),
+          title: Text(l10n.signOut),
+          onTap: () => confirmSignOut(context, ref),
+        ),
+      ],
     );
   }
 }
