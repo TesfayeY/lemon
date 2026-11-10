@@ -215,6 +215,26 @@ class SelfProfile {
 FieldVisibility _visibility(Object? value) =>
     parseWire(FieldVisibility.values, value);
 
+/// Result of submitting or replacing a prompt answer.
+class PromptSubmission {
+  const PromptSubmission({
+    required this.id,
+    required this.state,
+    required this.revision,
+  });
+
+  factory PromptSubmission.fromJson(Map<String, dynamic> json) =>
+      PromptSubmission(
+        id: json['id'] as String,
+        state: parseWire(ReviewState.values, json['state']),
+        revision: json['revision'] as int,
+      );
+
+  final String id;
+  final ReviewState state;
+  final int revision;
+}
+
 /// Public projection from `GET /v1/profiles/:id` and the owner's preview.
 /// Private fields arrive as null (or an empty language list).
 class PublicProfile {
