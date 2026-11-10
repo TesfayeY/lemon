@@ -376,6 +376,276 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
+  # --- Staff API (Phase 13). Every route: verified Firebase ID token with the
+  # `staffRole` custom claim (moderator | admin). 401 for missing/invalid/revoked
+  # tokens; 403 STAFF_ONLY (no staff claim), STAFF_EMAIL_UNVERIFIED,
+  # INSUFFICIENT_ROLE (moderator on an admin route), RECENT_AUTH_REQUIRED
+  # (account actions need a sign-in within ADMIN_RECENT_AUTH_MAX_AGE_SECONDS),
+  # SELF_ACTION_FORBIDDEN (staff acting on their own account or content).
+
+  /v1/admin/me:
+    get:
+      summary: The caller's verified staff role and permissions
+      responses:
+        '200':
+          description: Staff identity
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminMeResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/reasons:
+    get:
+      summary: Fixed reason catalogs for staff decisions (moderator)
+      responses:
+        '200':
+          description: Reason catalogs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminReasonsResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/content/photos:
+    get:
+      summary: Pending photo queue, oldest upload first (moderator)
+      description: Keyset pagination on (submittedAt, id); deciding listed items does not shift later pages.
+      parameters:
+        - $ref: '#/components/parameters/AdminCursor'
+        - $ref: '#/components/parameters/AdminLimit'
+      responses:
+        '200':
+          description: One page of pending photos
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPhotoQueueResponse' }
+        '400': { $ref: '#/components/responses/InvalidCursor' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/admin/content/photos/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: One photo with the minimum context a reviewer needs (moderator)
+      responses:
+        '200':
+          description: Photo review detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPhotoDetailResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/content/photos/{id}/media/{variant}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+      - { name: variant, in: path, required: true, schema: { type: string, enum: [thumb, display] } }
+    get:
+      summary: Stream a variant of a reviewable photo, pending included (moderator)
+      description: |
+        Metadata-free variants only; the private master is never served.
+        `Cache-Control: private, no-store`. Deleted, failed and processing
+        photos return 404 MEDIA_UNAVAILABLE.
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/webp:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: Storage temporarily unavailable (retryable)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /v1/admin/content/photos/{id}/review:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Approve or reject a pending photo (moderator)
+      description: |
+        Compare-and-set on the pending state, in one transaction with the
+        audit entry. A second decision gets 409 REVIEW_CONFLICT and writes
+        nothing. `reason` is required for rejections (photoRejection catalog)
+        and not allowed for approvals; `note` is internal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminReviewRequest' }
+      responses:
+        '200':
+          description: Decision committed and audited
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPhotoDecisionResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/admin/content/prompt-answers:
+    get:
+      summary: Pending prompt answer queue, oldest submission first (moderator)
+      description: An owner edit is a new submission and moves the answer to the back.
+      parameters:
+        - $ref: '#/components/parameters/AdminCursor'
+        - $ref: '#/components/parameters/AdminLimit'
+      responses:
+        '200':
+          description: One page of pending answers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPromptQueueResponse' }
+        '400': { $ref: '#/components/responses/InvalidCursor' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/admin/content/prompt-answers/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: One prompt answer with its published and pending text (moderator)
+      responses:
+        '200':
+          description: Prompt answer review detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPromptDetailResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/content/prompt-answers/{id}/review:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Approve or reject a pending prompt answer (moderator)
+      description: |
+        `expectedRevision` is the answer revision the reviewer saw. Approve
+        publishes the pending text and increments publishedRevision. Reject
+        keeps any published text live and shows the owner the reason. A stale
+        revision or an already-decided answer gets 409 REVIEW_CONFLICT with
+        `currentRevision`, and nothing is written.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminPromptReviewRequest' }
+      responses:
+        '200':
+          description: Decision committed and audited
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPromptDecisionResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/admin/users/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Account summary for staff (admin)
+      responses:
+        '200':
+          description: Account summary; never DOB, email or Firebase UID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminAccountResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/users/{id}/suspend:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Suspend an onboarding or active account (admin, recent sign-in)
+      description: |
+        One transaction: compare-and-set on account status and guardVersion,
+        guardVersion increment, audit entry. New actions stop immediately;
+        readiness is cleared. 409 ACCOUNT_STATE_CONFLICT for any other status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { $ref: '#/components/schemas/AdminSuspensionReason' }
+                note: { $ref: '#/components/schemas/AdminNote' }
+      responses:
+        '200':
+          description: Suspended and audited
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminAccountActionResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/admin/users/{id}/restore:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Restore a suspended account to its previous status (admin, recent sign-in)
+      description: Same transaction rules as suspend. Never reopens closed matches or chats.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { $ref: '#/components/schemas/AdminRestoreReason' }
+                note: { $ref: '#/components/schemas/AdminNote' }
+      responses:
+        '200':
+          description: Restored and audited
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminAccountActionResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/admin/audit-log:
+    get:
+      summary: Audit history of one target, oldest first (admin)
+      description: Always scoped to a single target; there is no bulk export.
+      parameters:
+        - { name: targetType, in: query, required: true, schema: { type: string, enum: [photo, promptAnswer, user] } }
+        - { name: targetId, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminAuditLogResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
 components:
   securitySchemes:
     firebaseIdToken:
@@ -429,6 +699,19 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  parameters:
+    AdminCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque keyset cursor from `meta.nextCursor`
+      schema: { type: string, maxLength: 256 }
+    AdminLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
 
   schemas:
     Meta:
@@ -609,6 +892,11 @@ components:
         pendingText: { type: [string, 'null'] }
         state: { $ref: '#/components/schemas/ReviewState' }
         revision: { type: integer, minimum: 1 }
+        rejectionReason:
+          description: Owner-only; set only while state is rejected
+          oneOf:
+            - { $ref: '#/components/schemas/PromptRejection' }
+            - { type: 'null' }
 
     SelfProfile:
       type: object
@@ -868,4 +1156,352 @@ components:
             candidateId: { type: string }
             passedAt: { type: string, format: date-time }
             expiresAt: { type: string, format: date-time }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    # --- Owner-only prompt rejection (SelfPromptAnswer.rejectionReason) ---
+
+    PromptRejection:
+      type: object
+      description: Why the owner's latest submission was rejected. Owner-only; never in public DTOs.
+      additionalProperties: false
+      required: [code, messageKey, message, action]
+      properties:
+        code: { type: string, enum: [contact_details, sexual_content, hateful_or_harassing, promotional, community_guidelines] }
+        messageKey: { type: string, description: Localization key for the respectful explanation }
+        message: { type: string, description: English fallback copy }
+        action: { type: string, enum: [replace] }
+
+    # --- Staff API ---
+
+    StaffRole:
+      type: string
+      enum: [moderator, admin]
+
+    AdminNote:
+      type: [string, 'null']
+      maxLength: 500
+      description: Optional internal note; stored in the audit log only
+
+    AdminSuspensionReason:
+      type: string
+      enum: [harassment, scam_or_spam, impersonation, underage_concern, hateful_conduct, community_guidelines]
+
+    AdminRestoreReason:
+      type: string
+      enum: [appeal_upheld, decision_error, concern_resolved]
+
+    AdminPageMeta:
+      type: object
+      additionalProperties: false
+      required: [requestId, nextCursor]
+      properties:
+        requestId: { type: string }
+        nextCursor: { type: [string, 'null'] }
+
+    AdminMediaPaths:
+      type: object
+      additionalProperties: false
+      required: [thumb, display]
+      properties:
+        thumb: { type: string, pattern: '^/v1/admin/content/photos/[^/]+/media/thumb$' }
+        display: { type: string, pattern: '^/v1/admin/content/photos/[^/]+/media/display$' }
+
+    AdminOwnerContext:
+      type: object
+      description: Minimum owner context; never DOB, email or Firebase UID
+      additionalProperties: false
+      required: [userId, displayName, accountStatus]
+      properties:
+        userId: { type: string }
+        displayName: { type: [string, 'null'] }
+        accountStatus:
+          oneOf:
+            - { $ref: '#/components/schemas/AccountStatus' }
+            - { type: 'null' }
+
+    PhotoRejection:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+
+    AdminReasonOption:
+      type: object
+      additionalProperties: false
+      required: [code, description]
+      properties:
+        code: { type: string }
+        description: { type: string }
+
+    AdminMeResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [role, permissions]
+          properties:
+            role: { $ref: '#/components/schemas/StaffRole' }
+            permissions:
+              type: array
+              items: { type: string, enum: [content.review, account.manage, audit.read] }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AdminReasonsResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [photoRejection, promptAnswerRejection, accountSuspension, accountRestore]
+          properties:
+            photoRejection: { type: array, items: { $ref: '#/components/schemas/AdminReasonOption' } }
+            promptAnswerRejection: { type: array, items: { $ref: '#/components/schemas/AdminReasonOption' } }
+            accountSuspension: { type: array, items: { $ref: '#/components/schemas/AdminReasonOption' } }
+            accountRestore: { type: array, items: { $ref: '#/components/schemas/AdminReasonOption' } }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AdminPhotoQueueResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, ownerId, width, height, submittedAt, media]
+            properties:
+              id: { type: string }
+              ownerId: { type: string }
+              width: { type: integer }
+              height: { type: integer }
+              submittedAt: { type: string, format: date-time }
+              media: { $ref: '#/components/schemas/AdminMediaPaths' }
+        meta: { $ref: '#/components/schemas/AdminPageMeta' }
+
+    AdminPhotoDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [id, state, ownerId, width, height, contentVersion, rejectionReason, submittedAt, reviewedAt, media, owner, ownerPhotos]
+          properties:
+            id: { type: string }
+            state: { $ref: '#/components/schemas/ReviewState' }
+            ownerId: { type: string }
+            width: { type: integer }
+            height: { type: integer }
+            contentVersion: { type: integer }
+            rejectionReason:
+              oneOf:
+                - { $ref: '#/components/schemas/PhotoRejection' }
+                - { type: 'null' }
+            submittedAt: { type: string, format: date-time }
+            reviewedAt: { type: [string, 'null'], format: date-time }
+            media: { $ref: '#/components/schemas/AdminMediaPaths' }
+            owner: { $ref: '#/components/schemas/AdminOwnerContext' }
+            ownerPhotos:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, state, media]
+                properties:
+                  id: { type: string }
+                  state: { $ref: '#/components/schemas/ReviewState' }
+                  media: { $ref: '#/components/schemas/AdminMediaPaths' }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AdminReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        reason: { type: [string, 'null'], description: Required for reject; catalog code }
+        note: { $ref: '#/components/schemas/AdminNote' }
+
+    AdminPromptReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, expectedRevision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        reason: { type: [string, 'null'], description: Required for reject; promptAnswerRejection code }
+        note: { $ref: '#/components/schemas/AdminNote' }
+        expectedRevision: { type: integer, minimum: 1 }
+
+    AdminPhotoDecisionResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [id, state, rejectionReason, auditId]
+          properties:
+            id: { type: string }
+            state: { type: string, enum: [approved, rejected] }
+            rejectionReason:
+              oneOf:
+                - { $ref: '#/components/schemas/PhotoRejection' }
+                - { type: 'null' }
+            auditId: { type: string }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AdminPromptQueueResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, ownerId, promptId, promptText, pendingText, hasPublishedText, revision, submittedAt]
+            properties:
+              id: { type: string }
+              ownerId: { type: string }
+              promptId: { type: string }
+              promptText: { type: string }
+              pendingText: { type: string }
+              hasPublishedText: { type: boolean }
+              revision: { type: integer, minimum: 1 }
+              submittedAt: { type: string, format: date-time }
+        meta: { $ref: '#/components/schemas/AdminPageMeta' }
+
+    AdminPromptDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [id, state, ownerId, promptId, promptText, pendingText, approvedText, revision, publishedRevision, rejectionReason, submittedAt, owner]
+          properties:
+            id: { type: string }
+            state: { $ref: '#/components/schemas/ReviewState' }
+            ownerId: { type: string }
+            promptId: { type: string }
+            promptText: { type: string }
+            pendingText: { type: [string, 'null'] }
+            approvedText: { type: [string, 'null'] }
+            revision: { type: integer, minimum: 1 }
+            publishedRevision: { type: integer, minimum: 0 }
+            rejectionReason:
+              oneOf:
+                - { $ref: '#/components/schemas/PromptRejection' }
+                - { type: 'null' }
+            submittedAt: { type: string, format: date-time }
+            owner: { $ref: '#/components/schemas/AdminOwnerContext' }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AdminPromptDecisionResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [id, state, publishedRevision, rejectionReason, auditId]
+          properties:
+            id: { type: string }
+            state: { type: string, enum: [approved, rejected] }
+            publishedRevision: { type: integer, minimum: 0 }
+            rejectionReason:
+              oneOf:
+                - { $ref: '#/components/schemas/PromptRejection' }
+                - { type: 'null' }
+            auditId: { type: string }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AdminAccount:
+      type: object
+      description: Never DOB, email or Firebase UID
+      additionalProperties: false
+      required: [userId, displayName, accountStatus, profileReady, guardVersion, suspension, createdAt]
+      properties:
+        userId: { type: string }
+        displayName: { type: [string, 'null'] }
+        accountStatus: { $ref: '#/components/schemas/AccountStatus' }
+        profileReady: { type: boolean }
+        guardVersion: { type: integer, minimum: 1 }
+        suspension:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [reason, suspendedAt]
+              properties:
+                reason: { $ref: '#/components/schemas/AdminSuspensionReason' }
+                suspendedAt: { type: string, format: date-time }
+            - { type: 'null' }
+        createdAt: { type: string, format: date-time }
+
+    AdminAccountResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/AdminAccount' }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AdminAccountActionResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [account, auditId]
+          properties:
+            account: { $ref: '#/components/schemas/AdminAccount' }
+            auditId: { type: string }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    AdminAuditLogResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, actorUid, actorRole, action, targetType, targetId, targetOwnerId, reason, note, before, after, requestId, createdAt]
+            properties:
+              id: { type: string }
+              actorUid: { type: string, description: Verified Firebase UID of the staff member }
+              actorRole: { $ref: '#/components/schemas/StaffRole' }
+              action:
+                type: string
+                enum: [photo.approve, photo.reject, prompt_answer.approve, prompt_answer.reject, account.suspend, account.restore]
+              targetType: { type: string, enum: [photo, promptAnswer, user] }
+              targetId: { type: string }
+              targetOwnerId: { type: string }
+              reason: { type: [string, 'null'] }
+              note: { type: [string, 'null'] }
+              before: { type: object }
+              after: { type: object }
+              requestId: { type: string }
+              createdAt: { type: string, format: date-time }
         meta: { $ref: '#/components/schemas/Meta' }
