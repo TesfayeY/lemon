@@ -1,9 +1,11 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 
 import '../core/api/id_token_source.dart';
 import '../core/api/lemon_api_client.dart';
 import '../core/catalogs/catalogs.dart';
+import '../features/auth/application/auth_controller.dart';
 import '../features/profile/data/photo_picker.dart';
 import 'config.dart';
 
@@ -13,14 +15,23 @@ final appConfigProvider = Provider<AppConfig>(
   (ref) => AppConfig.fromEnvironment(),
 );
 
+/// Firebase ID tokens for the signed-in person, via the auth controller (so
+/// token failures end the session).
 final idTokenSourceProvider = Provider<IdTokenSource>(
-  (ref) => idTokenSourceFromEnvironment(),
+  (ref) => ref.watch(authControllerProvider.notifier),
 );
+
+/// HTTP transport for the API client; null uses the default client. Tests
+/// swap in an in-memory backend here.
+final httpClientProvider = Provider<http.Client?>((ref) => null);
 
 final apiClientProvider = Provider<LemonApiClient>(
   (ref) => LemonApiClient(
     baseUrl: ref.watch(appConfigProvider).apiBaseUrl,
     tokens: ref.watch(idTokenSourceProvider),
+    httpClient: ref.watch(httpClientProvider),
+    onUnauthorized: () =>
+        ref.read(authControllerProvider.notifier).sessionRejected(),
   ),
 );
 
