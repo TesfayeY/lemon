@@ -1,18 +1,26 @@
 import 'package:flutter/material.dart';
-import '../core/theme/lemon_theme.dart';
-import 'shell.dart';
 
-/// Root application widget.
+import '../core/l10n/l10n.dart';
+import '../core/theme/lemon_theme.dart';
+import 'app_gate.dart';
+import 'config.dart';
+
+/// Root application widget. Expects a `ProviderScope` above it.
 class LemonApp extends StatelessWidget {
-  const LemonApp({super.key});
+  const LemonApp({super.key, this.home});
+
+  /// Overrides the start screen (tests and previews); defaults to [AppGate].
+  final Widget? home;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Lemon',
+      onGenerateTitle: (_) => appName,
       theme: buildLemonTheme(),
       debugShowCheckedModeBanner: false,
-      home: const AppShell(),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home ?? const AppGate(),
     );
   }
 }
