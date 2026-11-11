@@ -7,17 +7,17 @@
 | 00 | Decisions and acceptance map | Done | 2026-10-22 |
 | 01 | Repository and local test harness | Done | 2026-10-22 |
 | 02 | UI system and component gallery | Done | 2026-10-22 |
-| 03 | Auth, adult gate, guarded routes | Done | 2026-10-22 |
-| 04 | Profiles, preferences, public projection | In Progress (awaiting P-03) | 2026-10-25 |
+| 03 | Auth, adult gate, guarded routes | Done (Flutter Firebase sign-in screens merged 2026-11-10) | 2026-11-10 |
+| 04 | Profiles, preferences, public projection | In Progress (projection with photos and access checks merged; awaiting P-03) | 2026-11-10 |
 | 05 | Private media and moderation foundation | In Progress (photo uploads merged; Firebase Storage awaits P-04) | 2026-10-26 |
-| 06 | Complete onboarding and profile editing | In Progress (`feat/onboarding-flow`) | 2026-11-10 |
-| 07 | Discovery API and Flutter experience | In Progress (API on `feat/discovery`) | 2026-11-10 |
-| 08 | Likes, quota, incoming-like UI | In Progress (quota merged; API on `feat/likes`) | 2026-11-10 |
+| 06 | Complete onboarding and profile editing | In Progress (Flutter flow merged; journey against the real API + Auth emulator pending) | 2026-11-10 |
+| 07 | Discovery API and Flutter experience | In Progress (API merged; Flutter Discover screen not started; P-07 open) | 2026-11-10 |
+| 08 | Likes, quota, incoming-like UI | In Progress (quota and likes API merged; Flutter Likes screen not started) | 2026-11-10 |
 | 09 | Transactional matches and outbox | Not Started | |
 | 10 | Firestore rooms, access rules, provisioning | In Progress (rules + emulator tests merged; provisioning waits on Phase 09) | 2026-10-25 |
 | 11 | Reliable messaging and conversation UI | Not Started | |
 | 12 | Block, unmatch, report with race safety | Not Started | |
-| 13 | Moderation/admin workflow | Not Started | |
+| 13 | Moderation/admin workflow | In Progress (staff roles, review API, audit log, suspend/restore and CLI merged; admin UI target and P-08 open) | 2026-11-10 |
 | 14 | Notifications and push adapter | Not Started | |
 | 15 | Pause, deletion, account lifecycle | Not Started | |
 | 16 | Localization, accessibility, network polish | Not Started | |
@@ -26,11 +26,12 @@
 
 ## Current Focus
 
-Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open until the owner answers P-03 (which sensitive fields ship at launch) and reviews the seed languages catalog. Work now runs in parallel on feature branches (see `docs/git-workflow.md`); each feature's details live in `docs/features/<name>.md`.
+Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open until the owner answers P-03 (which sensitive fields ship at launch) and reviews the seed languages catalog. Work runs in parallel on feature branches (see `docs/git-workflow.md`); each feature's details live in `docs/features/<name>.md`.
 
-- Merged: photo uploads and review (Phase 05), daily like quota (Phase 08), Firestore room rules and emulator tests (Phase 10), oxlint setup
-- In progress: `feat/onboarding-flow` (Phase 06 Flutter), `feat/discovery` (Phase 07 API), `feat/likes` (Phase 08 API)
-- Waiting on owner: P-03, P-04 (Firebase Storage adapter), P-07 (launch metros), P-10 (like allowance)
+- Merged: photo uploads and review (05), daily like quota and likes API (08), Firestore room rules (10), discovery API (07), public profile projection with photo and profile access checks (04), Flutter onboarding and profile editing (06), Flutter sign-in screens (03), admin moderation foundation (13), oxlint setup
+- Decided 2026-11-10: D-10 (declined likers stay hidden), D-11 (no sent-likes list), D-12 (photo access follows profile access)
+- Next: Flutter Discover and Likes screens; Phase 09 matches (accept a like, matched pairs can view each other)
+- Waiting on owner: P-03, P-04 (Firebase Storage adapter), P-07 (launch metros), P-08 (moderation staffing), P-10 (like allowance), Firebase project setup for sign-in, admin UI target
 
 ## Toolchains Installed
 
@@ -109,4 +110,4 @@ Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open
 - API route tests use an in-memory collection stand-in; real-Mongo race tests are Phase 17
 - Account deletion must also purge `promptAnswersArchive`; drop the prompt answer migration once every environment has run it
 
-## Total: 277 tests passing (247 API + 30 Flutter)
+## Total: 663 tests passing (479 API + 184 Flutter), as of 2026-11-10

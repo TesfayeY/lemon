@@ -1,6 +1,6 @@
 # Product Decisions
 
-Last updated: 2026-10-22
+Last updated: 2026-11-10
 
 ## Confirmed Decisions
 
@@ -15,6 +15,9 @@ Last updated: 2026-10-22
 | D-07 | Sign-in method | Email/password with Firebase Auth verification and recovery | 2026-10-19 |
 | D-08 | Location mode | City-based discovery (US cities/states); no GPS required at launch | 2026-10-19 |
 | D-09 | Chat backend | Cloud Firestore for rooms/messages; Express authorizes all writes | 2026-10-19 |
+| D-10 | Declined likers in Discover | A person whose like you declined never returns to your Discover. Pending likers are hidden too; they appear in Likes instead | 2026-11-10 |
+| D-11 | Sent likes | No "sent likes" list. After you like someone, their profile is unavailable to you until you match (Phase 09). This matches the major dating apps and keeps who-liked-whom private until it's mutual | 2026-11-10 |
+| D-12 | Photo access | Another member's photos load only while their profile is viewable to you (`canViewProfile`, the same check as `GET /v1/profiles/:id`), rechecked on every request | 2026-11-10 |
 
 ## Pending Decisions (Owner Input Needed)
 

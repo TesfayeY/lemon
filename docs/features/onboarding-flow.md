@@ -10,8 +10,8 @@
 Done on the Flutter side, wired to the real API through a typed client. The
 server's review service decides when photos and prompt answers are approved,
 so a brand-new profile only becomes ready after a person reviews its content
-(`scripts/review-photos.ts` for photos; prompt review has no tool yet, see
-gaps).
+(`scripts/admin-review.ts` or the admin API for photos and prompt answers; see
+`admin-moderation.md`).
 
 ## What was built
 
@@ -91,7 +91,9 @@ reorder refreshes the grid and says so.
 
 ## API and contract gaps found
 
-Not changed here; listed for the owners of `apps/api` and `contracts/`.
+Found while building this branch. Status as of 2026-11-10: items 1-4, 6, 8
+and 9 were fixed by the public profile projection (PR #16) and admin
+moderation (PR #18). Items 5 and 7 remain open.
 
 1. **Prompt rejection reason missing.** `SelfPromptAnswer` has no
    `rejectionReason` (photos do). The client shows one generic respectful
@@ -160,8 +162,10 @@ Android emulators reach the host at `10.0.2.2`. Approve photos with
 
 ## Follow-ups
 
-- Flutter sign-in, verification and recovery screens with the Firebase Auth
-  SDK, replacing the dev token source.
+- ~~Flutter sign-in, verification and recovery screens~~ done in
+  `auth-screens.md` (PR #17).
+- Show `rejectionReason` for prompt answers (`promptRejection.*` keys) now that
+  the API sends it.
 - Integration journey against the real Express API + Auth emulator once a
   seeded test account and a prompt review tool exist.
 - Persist unsent drafts on device across app restarts (today unsent edits

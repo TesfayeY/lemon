@@ -101,22 +101,20 @@ deleting accounts.
 
 ## Follow-ups and open questions
 
-- **Flutter DTOs:** `apps/mobile/test/contracts/fixtures_test.dart` round-trips
-  fixtures exactly. It needs these additions before it passes again:
-  - `PublicProfile.photos` and `PromptAnswer.contentVersion`
-  - `SelfProfile.genderSelfDescription`
-  - the Discover card is now `{ profile }`
-
-  The preview no longer needs to stitch in photos from `GET /v1/me/photos`.
+- **Flutter DTOs:** done. `PublicProfile.photos`, `PromptAnswer.contentVersion`
+  and `SelfProfile.genderSelfDescription` exist and round-trip the fixtures.
+  The preview still stitches in photos from `GET /v1/me/photos`; it can switch
+  to `PublicProfile.photos`.
 - **Matches (Phase 09):** matched pairs are pair-excluded from Discover, so
   `canViewProfile` must allow them once matches exist (TODO in the discovery service).
-- **Outgoing likes:** a person the viewer liked is no longer discoverable, so
-  their profile now answers 404 to the viewer. Should a "sent likes" view or a
-  post-like screen keep access?
-- **Declined likes:** someone whose like the viewer declined stays visible
-  until discovery hides them (PR #14).
-- **Media route:** `GET /v1/media/:id/:variant` applies the same
-  `canViewProfile` check for non-owners (decided 2026-11-10), so a photo is
+- **Outgoing likes (decided, D-11):** there is no "sent likes" view. A person
+  the viewer liked is no longer discoverable, so their profile and photos
+  answer 404 to the viewer until the pair matches. The client finishes the
+  like animation on the card it already holds.
+- **Declined likes (decided, D-10):** discovery hides anyone whose like the
+  viewer declined (PR #14), so their profile is unavailable too.
+- **Media route (decided, D-12):** `GET /v1/media/:id/:variant` applies the same
+  `canViewProfile` check for non-owners, so a photo is
   never reachable when its profile answers 404. The check also runs before a
   `304`, so losing access stops cached revalidation too.
 - **Self-description publication:** once text review exists, decide whether it
