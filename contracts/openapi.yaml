@@ -376,6 +376,168 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
+  # --- Likes (Phase 08) -----------------------------------------------------
+  /v1/likes:
+    post:
+      operationId: sendLike
+      summary: Like one photo or prompt answer at a specific content version
+      description: |
+        The sender is the verified token's account; any sender field in the body
+        is ignored. Validation (recipient available, target owned by the
+        recipient, published, version current) happens before the daily charge,
+        all inside one transaction: a rejected or rolled-back like charges nothing.
+        One like per direction ever in v1. The sender never learns whether a like
+        was declined. Blocks are reported as `PROFILE_UNAVAILABLE`, never distinctly.
+
+        Error codes: 400 `IDEMPOTENCY_KEY_REQUIRED`; 403 `ACCOUNT_NOT_ELIGIBLE`,
+        `ACCOUNT_PAUSED`, `ACCOUNT_RESTRICTED`; 404 `PROFILE_UNAVAILABLE`
+        (recipient missing, inactive, unready, paused or blocked), `NOT_FOUND`
+        (caller has no account); 409 `TARGET_UNAVAILABLE`, `TARGET_STALE`,
+        `ALREADY_LIKED`, `INCOMING_LIKE_PENDING`, `IDEMPOTENCY_KEY_REUSED`;
+        422 `VALIDATION_ERROR`, `SELF_LIKE`; 429 `QUOTA_EXHAUSTED` with `limit`,
+        `resetAt` and a `Retry-After` header in seconds.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: |
+            8-128 of `A-Z a-z 0-9 - _`, scoped to the sender. Same key and same
+            payload replays the original like (200); same key and a different
+            payload is 409 `IDEMPOTENCY_KEY_REUSED`.
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{8,128}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SendLikeRequest' }
+      responses:
+        '200':
+          description: Replay of the like created earlier with this Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SendLikeResponse' }
+        '201':
+          description: Like created and one like charged
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SendLikeResponse' }
+        '400': { $ref: '#/components/responses/LikeError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/LikeError' }
+        '404': { $ref: '#/components/responses/LikeError' }
+        '409': { $ref: '#/components/responses/LikeError' }
+        '422': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/LikeError' }
+
+  /v1/likes/quota:
+    get:
+      operationId: getLikeQuota
+      summary: Remaining daily allowance for the like composer
+      description: The allowance resets at UTC midnight on the server clock; show `resetAt` in local time.
+      responses:
+        '200':
+          description: Current allowance
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data: { $ref: '#/components/schemas/LikeQuota' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/LikeError' }
+        '404': { $ref: '#/components/responses/LikeError' }
+
+  /v1/likes/incoming:
+    get:
+      operationId: listIncomingLikes
+      summary: Pending likes from currently available senders, newest first
+      description: |
+        Paused, inactive, unready and blocked senders are hidden (their likes stay
+        stored and reappear when the sender is available again). A page may be
+        short when senders are hidden; keep paging until `meta.nextCursor` is null.
+
+        Error codes: 400 `INVALID_CURSOR`; 403 `ACCOUNT_NOT_ELIGIBLE`,
+        `ACCOUNT_RESTRICTED`; 422 `VALIDATION_ERROR` (limit).
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque `meta.nextCursor` from the previous page
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: One page of incoming likes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncomingLikesResponse' }
+        '400': { $ref: '#/components/responses/LikeError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/LikeError' }
+        '404': { $ref: '#/components/responses/LikeError' }
+        '422': { $ref: '#/components/responses/LikeError' }
+
+  /v1/likes/{id}/decline:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: declineLike
+      summary: Decline an incoming like (recipient only, idempotent, terminal)
+      description: |
+        Charges nothing. Declining again returns the original decision. Anyone
+        but the recipient gets 404 `LIKE_NOT_FOUND`; 409 `LIKE_ALREADY_DECIDED`
+        once accepting exists.
+      responses:
+        '200':
+          description: The like is declined
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [id, state, decidedAt]
+                    properties:
+                      id: { type: string }
+                      state: { const: declined }
+                      decidedAt: { type: string, format: date-time }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/LikeError' }
+        '404': { $ref: '#/components/responses/LikeError' }
+        '409': { $ref: '#/components/responses/LikeError' }
+
+  /v1/likes/{id}/accept:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: acceptLike
+      summary: Accept an incoming like (not available until matching, Phase 09)
+      description: |
+        Returns 501 `ACCEPT_NOT_AVAILABLE` to the recipient and creates nothing.
+        Anyone but the recipient gets 404 `LIKE_NOT_FOUND`.
+      responses:
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/LikeError' }
+        '404': { $ref: '#/components/responses/LikeError' }
+        '501': { $ref: '#/components/responses/LikeError' }
+
 components:
   securitySchemes:
     firebaseIdToken:
@@ -429,6 +591,12 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+    LikeError:
+      description: Like error; each operation's description lists its codes
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/LikeErrorResponse' }
 
   schemas:
     Meta:
@@ -869,3 +1037,201 @@ components:
             passedAt: { type: string, format: date-time }
             expiresAt: { type: string, format: date-time }
         meta: { $ref: '#/components/schemas/Meta' }
+
+    # --- Likes (Phase 08) ---------------------------------------------------
+    LikeErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error, requestId]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, retryable]
+          properties:
+            code:
+              type: string
+              examples: [QUOTA_EXHAUSTED, TARGET_STALE, TARGET_UNAVAILABLE, PROFILE_UNAVAILABLE, ALREADY_LIKED]
+            message: { type: string }
+            retryable: { type: boolean }
+            fieldErrors:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [field, message]
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+            limit:
+              type: integer
+              minimum: 0
+              description: Present on QUOTA_EXHAUSTED
+            resetAt:
+              type: string
+              format: date-time
+              description: Present on QUOTA_EXHAUSTED; the next UTC midnight
+        requestId: { type: string }
+
+    LikeTarget:
+      type: object
+      additionalProperties: false
+      required: [kind, id, contentVersion]
+      properties:
+        kind: { type: string, enum: [photo, prompt] }
+        id: { type: string, description: Stable photo ID or prompt answer ID }
+        contentVersion:
+          type: integer
+          minimum: 1
+          description: The photo's contentVersion, or the prompt answer's published revision
+
+    SendLikeRequest:
+      type: object
+      required: [toUserId, target]
+      properties:
+        toUserId: { type: string, description: Opaque app user ID of the recipient }
+        target: { $ref: '#/components/schemas/LikeTarget' }
+        comment:
+          type: [string, 'null']
+          description: |
+            Optional; at most 200 grapheme clusters after NFC and whitespace
+            normalization (an emoji sequence or a letter with combining marks
+            counts once). Blank is stored as no comment.
+
+    LikeQuota:
+      type: object
+      additionalProperties: false
+      required: [limit, used, remaining, resetAt]
+      properties:
+        limit: { type: integer, minimum: 0, description: LIKES_PER_UTC_DAY (P-10 proposes 8) }
+        used: { type: integer, minimum: 0 }
+        remaining: { type: integer, minimum: 0 }
+        resetAt: { type: string, format: date-time, description: The next UTC midnight }
+
+    OutgoingLike:
+      type: object
+      description: The sender's view of a like; never reveals whether it was declined
+      additionalProperties: false
+      required: [id, toUserId, target, comment, createdAt]
+      properties:
+        id: { type: string }
+        toUserId: { type: string }
+        target: { $ref: '#/components/schemas/LikeTarget' }
+        comment: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+
+    SendLikeResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [like, quota]
+          properties:
+            like: { $ref: '#/components/schemas/OutgoingLike' }
+            quota: { $ref: '#/components/schemas/LikeQuota' }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    LikeMediaPaths:
+      type: object
+      description: Authenticated media paths; access is rechecked on every read
+      additionalProperties: false
+      required: [thumb, display]
+      properties:
+        thumb: { type: string }
+        display: { type: string }
+
+    LikePhoto:
+      type: object
+      description: Same allowlist as a public photo
+      additionalProperties: false
+      required: [id, order, width, height, contentVersion, media]
+      properties:
+        id: { type: string }
+        order: { type: integer }
+        width: { type: integer }
+        height: { type: integer }
+        contentVersion: { type: integer, minimum: 1 }
+        media: { $ref: '#/components/schemas/LikeMediaPaths' }
+
+    LikeSender:
+      type: object
+      description: Explicit allowlist. Never birth date, email, Firebase UID, account status or moderation data.
+      additionalProperties: false
+      required: [userId, displayName, age, cityName, stateCode, photo]
+      properties:
+        userId: { type: string }
+        displayName: { type: [string, 'null'] }
+        age: { type: [integer, 'null'], minimum: 18 }
+        cityName: { type: [string, 'null'] }
+        stateCode: { type: [string, 'null'] }
+        photo:
+          oneOf:
+            - { $ref: '#/components/schemas/LikePhoto' }
+            - { type: 'null' }
+
+    LikeContext:
+      description: |
+        What was liked, rendered from the snapshot taken at send time. Photo media
+        is present only while the photo is still approved at the liked version.
+        Prompt answer text is present while the answer is still published (the
+        liked words, even if since edited). Removed content is never shown.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, media]
+          properties:
+            kind: { const: photo }
+            media:
+              oneOf:
+                - { $ref: '#/components/schemas/LikeMediaPaths' }
+                - { type: 'null' }
+        - type: object
+          additionalProperties: false
+          required: [kind, promptId, promptText, answerText]
+          properties:
+            kind: { const: prompt }
+            promptId: { type: string }
+            promptText: { type: string }
+            answerText: { type: [string, 'null'] }
+
+    IncomingLike:
+      type: object
+      additionalProperties: false
+      required: [id, sender, target, context, targetChanged, comment, createdAt, canAccept]
+      properties:
+        id: { type: string }
+        sender: { $ref: '#/components/schemas/LikeSender' }
+        target: { $ref: '#/components/schemas/LikeTarget' }
+        context: { $ref: '#/components/schemas/LikeContext' }
+        targetChanged:
+          type: boolean
+          description: True when the liked item is no longer available as liked; show "This profile item changed"
+        comment: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        canAccept:
+          type: boolean
+          description: Always false until matching ships (Phase 09)
+
+    IncomingLikesResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [likes]
+          properties:
+            likes:
+              type: array
+              items: { $ref: '#/components/schemas/IncomingLike' }
+        meta:
+          type: object
+          additionalProperties: false
+          required: [requestId, nextCursor]
+          properties:
+            requestId: { type: string }
+            nextCursor: { type: [string, 'null'] }
