@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../l10n/l10n.dart';
 import '../theme/lemon_colors.dart';
 import '../theme/lemon_spacing.dart';
 import '../theme/lemon_typography.dart';
@@ -43,7 +44,7 @@ class LemonEmptyView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(LemonSpacing.xl),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -84,7 +85,7 @@ class LemonErrorView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(LemonSpacing.xl),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -101,7 +102,7 @@ class LemonErrorView extends StatelessWidget {
               TextButton.icon(
                 onPressed: onRetry,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Try again'),
+                label: Text(context.l10n.commonRetry),
               ),
             ],
           ],

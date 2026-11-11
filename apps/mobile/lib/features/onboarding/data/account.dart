@@ -129,3 +129,26 @@ class Account {
     'readiness': readiness.toJson(),
   };
 }
+
+/// Result of `POST /v1/me/bootstrap`.
+class BootstrapResult {
+  const BootstrapResult({
+    required this.userId,
+    required this.accountStatus,
+    required this.profileReady,
+    required this.adultEligible,
+  });
+
+  factory BootstrapResult.fromJson(Map<String, dynamic> json) =>
+      BootstrapResult(
+        userId: json['userId'] as String,
+        accountStatus: parseWire(AccountStatus.values, json['accountStatus']),
+        profileReady: json['profileReady'] as bool,
+        adultEligible: json['adultEligible'] as bool,
+      );
+
+  final String userId;
+  final AccountStatus accountStatus;
+  final bool profileReady;
+  final bool adultEligible;
+}

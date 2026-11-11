@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../l10n/l10n.dart';
 import '../theme/lemon_colors.dart';
 import '../theme/lemon_spacing.dart';
 
@@ -53,7 +54,7 @@ class PhotoFrame extends StatelessWidget {
                     icon: const Icon(Icons.favorite_border),
                     color: LemonColors.primary,
                     onPressed: onLike,
-                    tooltip: 'Like this photo',
+                    tooltip: context.l10n.likePhoto,
                   ),
                 ),
               ),

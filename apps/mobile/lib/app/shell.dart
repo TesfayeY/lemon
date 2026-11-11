@@ -1,27 +1,30 @@
 import 'package:flutter/material.dart';
+
+import '../core/l10n/l10n.dart';
+import '../core/theme/lemon_typography.dart';
 import '../core/widgets/bottom_nav.dart';
 import '../core/widgets/state_views.dart';
-import '../core/theme/lemon_typography.dart';
+import '../features/profile/ui/you_screen.dart';
 
 /// Main app shell with bottom navigation.
 ///
-/// Each tab maintains its own navigation state (placeholder screens for now).
+/// Discover, Likes and Chats are placeholders until their phases land.
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  const AppShell({super.key, this.initialTab = LemonTab.discover});
+
+  final LemonTab initialTab;
 
   @override
   State<AppShell> createState() => _AppShellState();
 }
 
 class _AppShellState extends State<AppShell> {
-  LemonTab _currentTab = LemonTab.discover;
+  late LemonTab _currentTab = widget.initialTab;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        child: _buildBody(),
-      ),
+      body: SafeArea(child: _buildBody(context)),
       bottomNavigationBar: LemonBottomNav(
         currentTab: _currentTab,
         onTabSelected: (tab) => setState(() => _currentTab = tab),
@@ -29,24 +32,34 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  Widget _buildBody() {
-    // Placeholder screens — replaced by real feature screens in later phases
+  Widget _buildBody(BuildContext context) {
     return switch (_currentTab) {
-      LemonTab.discover => _PlaceholderScreen(title: 'Discover', icon: Icons.explore),
-      LemonTab.likes => _PlaceholderScreen(title: 'Likes', icon: Icons.favorite),
-      LemonTab.chats => _PlaceholderScreen(title: 'Chats', icon: Icons.chat_bubble),
-      LemonTab.you => _PlaceholderScreen(title: 'You', icon: Icons.person),
+      LemonTab.discover => _PlaceholderScreen(
+        tab: LemonTab.discover,
+        icon: Icons.explore,
+      ),
+      LemonTab.likes => _PlaceholderScreen(
+        tab: LemonTab.likes,
+        icon: Icons.favorite,
+      ),
+      LemonTab.chats => _PlaceholderScreen(
+        tab: LemonTab.chats,
+        icon: Icons.chat_bubble,
+      ),
+      LemonTab.you => const YouScreen(),
     };
   }
 }
 
 class _PlaceholderScreen extends StatelessWidget {
-  const _PlaceholderScreen({required this.title, required this.icon});
-  final String title;
+  const _PlaceholderScreen({required this.tab, required this.icon});
+
+  final LemonTab tab;
   final IconData icon;
 
   @override
   Widget build(BuildContext context) {
+    final title = tab.label(context.l10n);
     return Column(
       children: [
         Padding(
@@ -55,7 +68,7 @@ class _PlaceholderScreen extends StatelessWidget {
         ),
         Expanded(
           child: LemonEmptyView(
-            message: '$title will be available soon.',
+            message: context.l10n.navComingSoon(title),
             icon: icon,
           ),
         ),

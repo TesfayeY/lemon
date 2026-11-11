@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemon/app/app.dart';
+import 'package:lemon/app/shell.dart';
+import 'package:lemon/core/l10n/l10n.dart';
 import 'package:lemon/core/widgets/lemon_button.dart';
 import 'package:lemon/core/widgets/lemon_text_field.dart';
 import 'package:lemon/core/widgets/lemon_card.dart';
@@ -13,14 +16,20 @@ import 'package:lemon/core/theme/lemon_theme.dart';
 Widget wrapWithTheme(Widget child) {
   return MaterialApp(
     theme: buildLemonTheme(),
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
     home: Scaffold(body: child),
   );
 }
 
+/// The app shell without the account gate (no API needed for these tabs).
+const shellApp = ProviderScope(child: LemonApp(home: AppShell()));
+
 void main() {
   group('LemonApp', () {
     testWidgets('renders with navigation bar', (tester) async {
-      await tester.pumpWidget(const LemonApp());
+      await tester.pumpWidget(shellApp);
+      await tester.pumpAndSettle();
       expect(find.text('Discover'), findsWidgets);
       expect(find.text('Likes'), findsWidgets);
       expect(find.text('Chats'), findsWidgets);
@@ -28,7 +37,8 @@ void main() {
     });
 
     testWidgets('switches tabs on navigation tap', (tester) async {
-      await tester.pumpWidget(const LemonApp());
+      await tester.pumpWidget(shellApp);
+      await tester.pumpAndSettle();
 
       // Tap Likes tab
       await tester.tap(find.text('Likes').last);
@@ -218,8 +228,9 @@ void main() {
         ),
       ));
 
+      final l10n = lookupAppLocalizations(const Locale('en'));
       for (final tab in LemonTab.values) {
-        expect(find.text(tab.label), findsOneWidget);
+        expect(find.text(tab.label(l10n)), findsOneWidget);
       }
     });
 
@@ -251,7 +262,8 @@ void main() {
 
   group('Theme', () {
     testWidgets('uses Lemon primary color', (tester) async {
-      await tester.pumpWidget(const LemonApp());
+      await tester.pumpWidget(shellApp);
+      await tester.pumpAndSettle();
       // Access theme from a descendant widget inside MaterialApp
       final context = tester.element(find.byType(Scaffold).first);
       final theme = Theme.of(context);
@@ -259,7 +271,8 @@ void main() {
     });
 
     testWidgets('uses warm ivory scaffold background', (tester) async {
-      await tester.pumpWidget(const LemonApp());
+      await tester.pumpWidget(shellApp);
+      await tester.pumpAndSettle();
       final context = tester.element(find.byType(Scaffold).first);
       final theme = Theme.of(context);
       expect(theme.scaffoldBackgroundColor, equals(LemonColors.canvas));
