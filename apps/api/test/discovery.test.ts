@@ -375,9 +375,9 @@ describe('GET /v1/discovery: mutual eligibility', () => {
 });
 
 describe('GET /v1/discovery: pair exclusions', () => {
-  it('hides any outgoing like and pending incoming likes (those belong in Likes)', async () => {
+  it('hides any outgoing like, pending incoming likes (shown in Likes) and incoming likes the viewer declined', async () => {
     await woman('viewer');
-    for (const n of ['liked-pending', 'liked-declined', 'liked-accepted', 'likes-me', 'untouched']) await man(n);
+    for (const n of ['liked-pending', 'liked-declined', 'liked-accepted', 'likes-me', 'declined-by-me', 'untouched']) await man(n);
     const like = (fromUserId: string, toUserId: string, state: string) => ({
       _id: `${fromUserId}->${toUserId}`, fromUserId, toUserId, state,
       target: { kind: 'photo', id: `${toUserId}-photo-0`, contentVersion: 1 },
@@ -389,6 +389,7 @@ describe('GET /v1/discovery: pair exclusions', () => {
       like('viewer', 'liked-declined', 'declined'),
       like('viewer', 'liked-accepted', 'accepted'),
       like('likes-me', 'viewer', 'pending'),
+      like('declined-by-me', 'viewer', 'declined'),
     ]);
     const { seen } = await drain(makeApp(), 'viewer');
     expect(seen).toEqual(['untouched']);

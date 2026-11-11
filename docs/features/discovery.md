@@ -25,6 +25,7 @@ Shared files have small additive edits only: `src/index.ts` (route), `src/indexe
 - **Pair-state exclusions** are rechecked on every page:
   - Any like from the viewer, in any state.
   - A pending like from the candidate. These show in Likes, not Discover.
+  - A like from the candidate that the viewer declined. A decline is final, so the liker never comes back into the viewer's Discover.
   - An unexpired pass. The query always checks `expiresAt > now`, so a pass that has expired but that TTL hasn't deleted yet never hides anyone.
   - A pluggable `PairExclusionProvider` for blocks, terminal pairs, report hides and matches. The default `noPairExclusions` excludes nobody.
 - **Sessions:**
@@ -91,7 +92,7 @@ Shared files have small additive edits only: `src/index.ts` (route), `src/indexe
   - Tests use fictional cities and states (`springfield-xa`, `XA`/`XB`, …).
 - **Paused viewers** can't browse (403 `DISCOVERY_PAUSED`). Pausing hides you from others, and §4.4 disables sending likes while paused, so browsing would be one-sided.
 - **Viewer moving city** invalidates the session, like a preferences change.
-- **Incoming likes that are declined or accepted** don't hide the candidate in Discover. Only pending ones do, per the shared likes contract. Accepted likes become matches, which the Phase 09 provider will exclude. Whether a like the viewer declined should also hide the liker is an open product question.
+- **Incoming likes:** pending and declined ones hide the liker (owner decision, 2026-11-10). Accepted likes become matches, which the Phase 09 provider will exclude.
 - **Pool bound:** a session build reads at most 2,000 pre-filtered profiles in index order before the mutual check and shuffle. At pilot density this is the whole pool. For very large pools the sample leans towards the index order (see Phase 17).
 
 ## Follow-ups

@@ -221,7 +221,8 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
 
   /**
    * Pair state that hides a candidate: any like from the viewer (any state),
-   * a pending like from the candidate (shown in Likes instead), an unexpired
+   * a pending like from the candidate (shown in Likes instead), a like from the
+   * candidate that the viewer declined (decline is terminal), an unexpired
    * pass, and the pluggable block/pair/report-hide/match provider.
    */
   async function excludedByPairState(viewerId: string, ids: readonly string[], at: Date): Promise<Set<string>> {
@@ -230,7 +231,7 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
     const [outgoing, incoming, passed, provided] = await Promise.all([
       likes.find({ fromUserId: viewerId, toUserId: { $in: list } }, { projection: { _id: 0, toUserId: 1 } }).toArray(),
       likes
-        .find({ fromUserId: { $in: list }, toUserId: viewerId, state: 'pending' }, { projection: { _id: 0, fromUserId: 1 } })
+        .find({ fromUserId: { $in: list }, toUserId: viewerId, state: { $in: ['pending', 'declined'] } }, { projection: { _id: 0, fromUserId: 1 } })
         .toArray(),
       passes
         .find({ viewerId, candidateId: { $in: list }, expiresAt: { $gt: at } }, { projection: { _id: 0, candidateId: 1 } })
