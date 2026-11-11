@@ -14,6 +14,12 @@ export interface ProfileDocument {
   displayName: string | null;
   genderIdentity: string | null; // catalog ID
   genderDisplay: 'public' | 'private'; // visibility
+  /**
+   * Optional free text beside the catalog choice (spec §4.2). Owner-only until
+   * text review exists; never read by eligibility, matching or ranking.
+   * Absent on profiles saved before the field existed.
+   */
+  genderSelfDescription?: string | null;
   cityId: string | null;
   stateCode: string | null;
   countryCode: 'US';
@@ -62,6 +68,9 @@ export const MAX_PROMPT_ANSWERS = 3;
 /** Grapheme limit for optional free-text fields (hometown, occupation, education, religion) */
 export const OPTIONAL_TEXT_MAX = 100;
 
+/** Grapheme limit for the gender self-description; the spec sets none, so it shares the optional-text limit */
+export const GENDER_SELF_DESCRIPTION_MAX = OPTIONAL_TEXT_MAX;
+
 export function createEmptyProfile(userId: string): ProfileDocument {
   const now = new Date();
   return {
@@ -70,6 +79,7 @@ export function createEmptyProfile(userId: string): ProfileDocument {
     displayName: null,
     genderIdentity: null,
     genderDisplay: 'public',
+    genderSelfDescription: null,
     cityId: null,
     stateCode: null,
     countryCode: 'US',

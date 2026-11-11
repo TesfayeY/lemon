@@ -12,12 +12,10 @@
 import { randomInt } from 'node:crypto';
 import type { Collection, Db, Filter } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
-import type { UserDocument } from '../auth/account.js';
-import type { ProfileDocument, PromptAnswerDocument } from '../profiles/schema.js';
+import { canInteract, type UserDocument } from '../auth/account.js';
+import type { ProfileDocument } from '../profiles/schema.js';
 import type { PreferencesDocument } from '../preferences/schema.js';
-import { toPublicProfileDTO, type PublicProfileDTO } from '../profiles/dto.js';
-import { toPublicPhotoDTO, type PublicPhotoDTO } from '../media/dto.js';
-import { MAX_PHOTOS, PhotoState, type PhotoDocument } from '../media/schema.js';
+import { loadPublicProfiles, type PublicProfileDTO } from '../profiles/dto.js';
 import { isDuplicateKeyError } from '../../indexes.js';
 import { decodeCursor, encodeCursor } from './cursor.js';
 import { browseBlocker, pairBlocker, type DiscoveryParticipant, type EligibilityContext } from './eligibility.js';
@@ -86,9 +84,9 @@ export class DiscoveryError extends Error {
   }
 }
 
+/** One candidate: the shared public projection (approved photos included), nothing else. */
 export interface DiscoveryCard {
   profile: PublicProfileDTO;
-  photos: PublicPhotoDTO[];
 }
 
 /**
@@ -182,8 +180,6 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
   const users = db.collection<UserDocument>('users');
   const profiles = db.collection<ProfileDocument>('profiles');
   const preferences = db.collection<PreferencesDocument>('preferences');
-  const promptAnswers = db.collection<PromptAnswerDocument>('promptAnswers');
-  const photos = db.collection<PhotoDocument>('photos');
   const passes: Collection<PassDocument> = db.collection<PassDocument>(PASSES_COLLECTION);
   const sessions = db.collection<DiscoverySessionDocument>(DISCOVERY_SESSIONS_COLLECTION);
   const likes = db.collection<LikeView>(LIKES_COLLECTION);
@@ -292,28 +288,13 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
     return stableShuffle(eligible, seed).slice(0, config.maxSessionSize);
   }
 
+  /** Cards in session order, built from the same projection as `GET /v1/profiles/:id`. */
   async function hydrate(ids: readonly string[]): Promise<DiscoveryCard[]> {
-    if (ids.length === 0) return [];
-    const list = [...ids];
-    const [userDocs, profileDocs, answerDocs, photoDocs] = await Promise.all([
-      users.find({ _id: { $in: list } }).toArray(),
-      profiles.find({ userId: { $in: list } }).toArray(),
-      promptAnswers.find({ ownerId: { $in: list }, approvedText: { $ne: null } }).sort({ slot: 1 }).toArray(),
-      photos.find({ ownerId: { $in: list }, state: PhotoState.APPROVED }).sort({ order: 1 }).toArray(),
-    ]);
-    const userById = new Map(userDocs.map((u) => [u._id, u]));
-    const profileById = new Map(profileDocs.map((p) => [p.userId, p]));
-    const cards: DiscoveryCard[] = [];
-    for (const id of ids) {
-      const user = userById.get(id);
-      const profile = profileById.get(id);
-      if (!user || !profile) continue;
-      cards.push({
-        profile: toPublicProfileDTO(profile, user, answerDocs.filter((a) => a.ownerId === id)),
-        photos: photoDocs.filter((p) => p.ownerId === id).slice(0, MAX_PHOTOS).map(toPublicPhotoDTO),
-      });
-    }
-    return cards;
+    const projected = await loadPublicProfiles(db, ids);
+    return ids.flatMap((id) => {
+      const profile = projected.get(id);
+      return profile ? [{ profile }] : [];
+    });
   }
 
   async function openSession(
@@ -463,7 +444,36 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
     return (await eligibleAmong(viewer, [candidateId], ctx)).has(candidateId);
   }
 
-  return { getPage, pass, isDiscoverable };
+  /**
+   * Whether the candidate has a pending like to the viewer that the Likes
+   * list would show: the sender is active, ready and not paused, and no pair
+   * exclusion (block, report hide, terminal pair) applies. Preferences are not
+   * rechecked: the like was sent while the pair was mutually eligible.
+   */
+  async function hasVisibleIncomingLike(viewerId: string, candidateId: string): Promise<boolean> {
+    const like = await likes.findOne(
+      { fromUserId: candidateId, toUserId: viewerId, state: 'pending' },
+      { projection: { _id: 1 } },
+    );
+    if (!like) return false;
+    const sender = await users.findOne({ _id: candidateId }, { projection: PARTICIPANT_USER_FIELDS });
+    if (!sender || !canInteract(sender.accountStatus) || !sender.profileReady || sender.discoverPaused) return false;
+    return !(await exclusions.excludedAmong(viewerId, [candidateId])).has(candidateId);
+  }
+
+  /**
+   * Contextual access for `GET /v1/profiles/:id` (the viewer's own profile is
+   * handled by the route): the candidate is discoverable right now, or has a
+   * pending like to the viewer. Everything else is unavailable.
+   * TODO(Phase 09): matched pairs, once matches exist (they are pair-excluded from Discover).
+   */
+  async function canViewProfile(user: UserDocument, candidateId: string): Promise<boolean> {
+    if (candidateId === user._id) return false;
+    if (await isDiscoverable(user, candidateId)) return true;
+    return hasVisibleIncomingLike(user._id, candidateId);
+  }
+
+  return { getPage, pass, isDiscoverable, canViewProfile };
 }
 
 export type DiscoveryService = ReturnType<typeof createDiscoveryService>;

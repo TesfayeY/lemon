@@ -1,4 +1,9 @@
-export { createDiscoveryRoutes, type DiscoveryRoutesConfig, type DiscoveryRouteOverrides } from './routes.js';
+export {
+  createConfiguredDiscoveryService,
+  createDiscoveryRoutes,
+  type DiscoveryRoutesConfig,
+  type DiscoveryRouteOverrides,
+} from './routes.js';
 export {
   createDiscoveryService,
   DiscoveryError,

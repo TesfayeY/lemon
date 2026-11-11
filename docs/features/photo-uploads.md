@@ -21,7 +21,7 @@ A person uploads 3–6 photos. The server validates and strips them, holds them 
 | `GET /v1/me/photos` | Owner's photos with state (`processing`, `pending`, `approved`, `rejected` + respectful `rejectionReason`), order, and the photo-set `revision`. |
 | `PATCH /v1/me/photos/order` | Body `{ expectedRevision, photoIds: [...] }`. Must list exactly the owner's current non-rejected photo IDs. Compare-and-set on revision; `409 REVISION_CONFLICT` with `currentRevision`. |
 | `DELETE /v1/me/photos/:id` | Owner only (`404` for anyone else). Removes access immediately, schedules object cleanup, recomputes readiness. |
-| `GET /v1/media/:assetId/:variant` | Streams `thumb` or `display`. Re-checks on every request: viewer is the owner, **or** the asset is `approved` and the owner is `active` + `profileReady`, and the viewer is active + ready. Originals and quarantine are never served. No permanent public URLs. |
+| `GET /v1/media/:assetId/:variant` | Streams `thumb` or `display`. Re-checks on every request: viewer is the owner, **or** the asset is `approved`, the owner is `active` + `profileReady`, the viewer is active + ready, and the viewer may see the owner's profile (`canViewProfile`, the same check as `GET /v1/profiles/:id`). Originals and quarantine are never served. No permanent public URLs. |
 | Review service (no admin UI) | `reviewPhoto(photoId, decision, reason, actorId)` in the module, plus a dev-only script `scripts/review-photos.ts` to approve/reject. Records actor, target, reason, before/after state and timestamp in an `auditLog` collection. **Do not auto-approve.** |
 
 ### Processing

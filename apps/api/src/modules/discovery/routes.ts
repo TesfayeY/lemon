@@ -6,7 +6,7 @@ import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middlew
 import type { UserDocument } from '../auth/account.js';
 import type { Env } from '../../config.js';
 import { resolveCursorSecret } from './cursor.js';
-import { createDiscoveryService, DiscoveryError, type DiscoveryOptions } from './service.js';
+import { createDiscoveryService, DiscoveryError, type DiscoveryOptions, type DiscoveryService } from './service.js';
 
 export type DiscoveryRoutesConfig = Pick<Env, 'NODE_ENV' | 'DISCOVERY_CURSOR_SECRET' | 'PASS_COOLDOWN_DAYS'>;
 
@@ -15,20 +15,33 @@ export type DiscoveryRouteOverrides = Omit<DiscoveryOptions, 'cursorSecret' | 'p
 
 const passBody = z.object({ candidateId: z.string().min(1).max(128) }).strict();
 
+/** The discovery service as configured from the environment; share one instance across routes. */
+export function createConfiguredDiscoveryService(
+  db: Db,
+  config: DiscoveryRoutesConfig,
+  overrides: DiscoveryRouteOverrides = {},
+): DiscoveryService {
+  return createDiscoveryService(db, {
+    ...overrides,
+    cursorSecret: resolveCursorSecret(config.DISCOVERY_CURSOR_SECRET, config.NODE_ENV),
+    passCooldownDays: config.PASS_COOLDOWN_DAYS,
+  });
+}
+
+/**
+ * Pass `service` to share one instance with other routes (profile access
+ * rechecks discoverability); `overrides` only apply when it is omitted.
+ */
 export function createDiscoveryRoutes(
   db: Db,
   auth: Auth,
   config: DiscoveryRoutesConfig,
   overrides: DiscoveryRouteOverrides = {},
+  service: DiscoveryService = createConfiguredDiscoveryService(db, config, overrides),
 ) {
   const router = Router();
   const requireAuth = createAuthMiddleware(auth);
   const users = db.collection<UserDocument>('users');
-  const service = createDiscoveryService(db, {
-    ...overrides,
-    cursorSecret: resolveCursorSecret(config.DISCOVERY_CURSOR_SECRET, config.NODE_ENV),
-    passCooldownDays: config.PASS_COOLDOWN_DAYS,
-  });
 
   function sendError(req: Request, res: Response, err: DiscoveryError) {
     res.status(err.status).json({

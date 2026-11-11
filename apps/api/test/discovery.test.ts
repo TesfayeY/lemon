@@ -275,8 +275,11 @@ describe('GET /v1/discovery: mutual eligibility', () => {
     expect(card.profile).toMatchObject({ userId: 'dawit', displayName: 'dawit', hometown: 'Asmara', stateCode: 'XA' });
     // Published text only; the edit awaiting review never leaks
     expect(card.profile.promptAnswers.map((a: { text: string }) => a.text)).toEqual(['Answer 0', 'Answer 1', 'Answer 2']);
-    expect(card.photos.map((p: { id: string }) => p.id)).toEqual(['dawit-photo-0', 'dawit-photo-1', 'dawit-photo-2']);
-    expect(card.photos[0].media).toEqual({ thumb: '/v1/media/dawit-photo-0/thumb', display: '/v1/media/dawit-photo-0/display' });
+    expect(card.profile.promptAnswers.map((a: { contentVersion: number }) => a.contentVersion)).toEqual([1, 1, 1]);
+    // Photos come from the shared public projection; the card has nothing else
+    expect(Object.keys(card)).toEqual(['profile']);
+    expect(card.profile.photos.map((p: { id: string }) => p.id)).toEqual(['dawit-photo-0', 'dawit-photo-1', 'dawit-photo-2']);
+    expect(card.profile.photos[0].media).toEqual({ thumb: '/v1/media/dawit-photo-0/thumb', display: '/v1/media/dawit-photo-0/display' });
 
     const body = JSON.stringify(res.body);
     for (const secret of ['1994-02-15', 'uid-dawit', 'firebaseUid', 'birthDate', 'accountStatus', 'discoverPaused',
