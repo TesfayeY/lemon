@@ -58,6 +58,8 @@ export interface PromptAnswerDocument {
   state: 'approved' | 'pending' | 'rejected'; // review state of the latest submission
   revision: number; // owner edit revision (two-device safety)
   publishedRevision: number; // content version of approvedText; 0 = never published
+  /** PROMPT_REJECTION_REASONS key of the latest rejection; owner-only, meaningful only while state is 'rejected' */
+  rejectionReason?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

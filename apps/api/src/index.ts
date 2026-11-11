@@ -11,6 +11,7 @@ import { createCatalogRoutes } from './modules/catalogs/routes.js';
 import { createMediaRoutes } from './modules/media/routes.js';
 import { createConfiguredDiscoveryService, createDiscoveryRoutes } from './modules/discovery/routes.js';
 import { createLikesRoutes } from './modules/likes/routes.js';
+import { createAdminRoutes } from './modules/admin/routes.js';
 
 async function main() {
   const config = loadConfig();
@@ -44,6 +45,7 @@ async function main() {
       createMediaRoutes(db, auth, config, { profileAccess: discovery }),
       createDiscoveryRoutes(db, auth, config, {}, discovery),
       createLikesRoutes(db, auth, config),
+      createAdminRoutes(db, client, auth, config),
     ],
   });
 

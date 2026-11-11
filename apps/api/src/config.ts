@@ -20,6 +20,9 @@ const envSchema = z.object({
   PASS_COOLDOWN_DAYS: z.coerce.number().int().positive().default(30),
   // Likes: new likes per UTC day (P-10 proposes 8, pending owner confirmation)
   LIKES_PER_UTC_DAY: z.coerce.number().int().min(0).default(8),
+
+  // Admin: account actions require a Firebase sign-in at most this many seconds old
+  ADMIN_RECENT_AUTH_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(900),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -21,6 +21,7 @@ import { calculateAge } from '../auth/adult-gate.js';
 import { findCity, findGender, findIntention, findPrompt } from '../catalogs/data.js';
 import { toPublicPhotoDTO, type PublicPhotoDTO } from '../media/dto.js';
 import { MAX_PHOTOS, PhotoState, type PhotoDocument } from '../media/schema.js';
+import { describePromptRejection, type PromptRejectionDTO } from './prompt-review.js';
 
 /** What the owner sees about their own profile */
 export interface SelfProfileDTO {
@@ -98,6 +99,8 @@ export interface SelfPromptAnswerDTO {
   pendingText: string | null;
   state: PromptAnswerDocument['state'];
   revision: number;
+  /** Owner-only: why the latest submission was rejected, with a replace action; null unless rejected */
+  rejectionReason: PromptRejectionDTO | null;
 }
 
 export function toSelfProfileDTO(
@@ -204,6 +207,7 @@ function toSelfPromptAnswerDTO(answer: PromptAnswerDocument): SelfPromptAnswerDT
     pendingText: answer.pendingText,
     state: answer.state,
     revision: answer.revision,
+    rejectionReason: answer.state === 'rejected' ? describePromptRejection(answer.rejectionReason) : null,
   };
 }
 
