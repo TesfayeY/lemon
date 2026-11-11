@@ -39,6 +39,7 @@ class LemonApiClient {
     required this.tokens,
     http.Client? httpClient,
     this.timeout = const Duration(seconds: 20),
+    this.onUnauthorized,
   }) : _http = httpClient ?? http.Client();
 
   /// API origin, e.g. `http://localhost:3000`.
@@ -46,6 +47,10 @@ class LemonApiClient {
   final IdTokenSource tokens;
   final Duration timeout;
   final http.Client _http;
+
+  /// Called when the server still answers `401` after a force-refreshed
+  /// token: the session is no longer valid and the person must sign in again.
+  final void Function()? onUnauthorized;
 
   // Account and onboarding
 
@@ -229,9 +234,9 @@ class LemonApiClient {
 
     final first = await _round(() async => build(await token(refresh: false)));
     if (first.statusCode != 401) return _decode(first);
-    return _decode(
-      await _round(() async => build(await token(refresh: true))),
-    );
+    final second = await _round(() async => build(await token(refresh: true)));
+    if (second.statusCode == 401) onUnauthorized?.call();
+    return _decode(second);
   }
 
   Future<Map<String, dynamic>> _complete(

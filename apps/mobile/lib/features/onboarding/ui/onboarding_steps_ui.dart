@@ -10,71 +10,40 @@ import '../../../core/theme/lemon_spacing.dart';
 import '../../../core/theme/lemon_typography.dart';
 import '../../../core/widgets/inline_message.dart';
 import '../../../core/widgets/lemon_button.dart';
+import '../../auth/application/auth_controller.dart';
+import '../../auth/ui/verify_email_view.dart';
 import '../../profile/ui/form_host.dart';
 import '../data/account.dart';
 import '../domain/birth_date.dart';
 
-/// Email verification happens through Firebase. After the person follows the
-/// link, a fresh token carries the verified claim and bootstrap syncs it.
-class VerifyEmailStep extends ConsumerStatefulWidget {
+/// Email verification happens through Firebase. The server still lacks the
+/// verified claim (e.g. a token from before the link was opened), so this
+/// refreshes the Firebase user and token, re-bootstraps and re-checks.
+class VerifyEmailStep extends ConsumerWidget {
   const VerifyEmailStep({super.key, required this.onVerified});
 
   final ValueChanged<Account> onVerified;
 
   @override
-  ConsumerState<VerifyEmailStep> createState() => _VerifyEmailStepState();
-}
-
-class _VerifyEmailStepState extends ConsumerState<VerifyEmailStep> {
-  bool _busy = false;
-  String? _error;
-
-  Future<void> _check() async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    final api = ref.read(apiClientProvider);
-    try {
-      await ref.read(idTokenSourceProvider).idToken(forceRefresh: true);
+  Widget build(BuildContext context, WidgetRef ref) {
+    Future<bool> check() async {
+      final auth = ref.read(authControllerProvider.notifier);
+      if (!await auth.refreshVerification()) return false;
+      final api = ref.read(apiClientProvider);
       await api.bootstrap();
       final account = await api.getAccount();
-      if (!mounted) return;
       if (account.readiness.missing.contains(
         ReadinessRequirement.emailVerified,
       )) {
-        setState(() => _error = context.l10n.verifyEmailStillMissing);
-      } else {
-        widget.onVerified(account);
+        return false;
       }
-    } on Object catch (e) {
-      if (mounted) setState(() => _error = describeFailure(context.l10n, e));
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      onVerified(account);
+      return true;
     }
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    final error = _error;
     return ListView(
       padding: const EdgeInsets.all(LemonSpacing.lg),
-      children: [
-        SectionHeader(
-          title: l10n.verifyEmailTitle,
-          subtitle: l10n.verifyEmailBody,
-        ),
-        if (error != null) ...[
-          InlineMessage(message: error, tone: MessageTone.error),
-          const SizedBox(height: LemonSpacing.base),
-        ],
-        LemonButton(
-          label: l10n.verifyEmailCheck,
-          onPressed: _check,
-          isLoading: _busy,
-        ),
-      ],
+      children: [VerifyEmailView(onCheck: check)],
     );
   }
 }

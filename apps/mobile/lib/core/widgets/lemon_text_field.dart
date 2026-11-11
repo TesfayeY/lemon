@@ -14,6 +14,10 @@ class LemonTextField extends StatefulWidget {
     this.maxLines = 1,
     this.onChanged,
     this.autofillHints,
+    this.textInputAction,
+    this.onSubmitted,
+    this.enabled = true,
+    this.autocorrect = true,
   });
 
   final String label;
@@ -25,6 +29,10 @@ class LemonTextField extends StatefulWidget {
   final int maxLines;
   final ValueChanged<String>? onChanged;
   final Iterable<String>? autofillHints;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
+  final bool enabled;
+  final bool autocorrect;
 
   @override
   State<LemonTextField> createState() => _LemonTextFieldState();
@@ -49,6 +57,11 @@ class _LemonTextFieldState extends State<LemonTextField> {
       maxLines: widget.maxLines,
       onChanged: widget.onChanged,
       autofillHints: widget.autofillHints,
+      textInputAction: widget.textInputAction,
+      onSubmitted: widget.onSubmitted,
+      enabled: widget.enabled,
+      autocorrect: widget.autocorrect && !widget.obscureText,
+      enableSuggestions: !widget.obscureText,
       decoration: InputDecoration(
         labelText: widget.label,
         errorText: widget.errorText,

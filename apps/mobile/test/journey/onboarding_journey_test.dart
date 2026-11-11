@@ -1,17 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../helpers/fake_auth.dart';
 import '../helpers/fake_backend.dart';
 import '../helpers/harness.dart';
 import '../helpers/journey.dart';
 
 void main() {
-  testWidgets('a new person completes onboarding and enters the app only '
-      'after the server reports the profile ready', (tester) async {
+  testWidgets('a new person signs in, completes onboarding and enters the '
+      'app only after the server reports the profile ready', (tester) async {
     final backend = FakeBackend();
     final picker = FakePhotoPicker();
-    await pumpLemon(tester, backend: backend, picker: picker);
+    await pumpLemon(
+      tester,
+      backend: backend,
+      picker: picker,
+      auth: FakeAuthRepository(signedIn: false),
+    );
+    expect(backend.requests, isEmpty);
 
+    await signInFromWelcome(tester);
     expect(find.text('Step 1 of 9'), findsOneWidget);
     await completeBirthDate(tester);
     expect(backend.sent('PATCH', '/v1/me/onboarding').first.body, {
