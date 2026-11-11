@@ -28,7 +28,7 @@ async function main() {
   console.log(`Firebase initialized: ${config.FIREBASE_PROJECT_ID}`);
   const auth = getAuth(firebaseApp);
 
-  // One discovery service: Discover itself and profile reads recheck the same rules
+  // One discovery service: Discover, profile reads and photo reads recheck the same rules
   const discovery = createConfiguredDiscoveryService(db, config);
 
   // Create and start the Express app
@@ -40,7 +40,7 @@ async function main() {
       createProfileRoutes(db, auth, { profileAccess: discovery }),
       createPreferencesRoutes(db, auth),
       createCatalogRoutes(),
-      createMediaRoutes(db, auth, config),
+      createMediaRoutes(db, auth, config, { profileAccess: discovery }),
       createDiscoveryRoutes(db, auth, config, {}, discovery),
     ],
   });

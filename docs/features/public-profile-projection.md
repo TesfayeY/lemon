@@ -115,9 +115,10 @@ deleting accounts.
   post-like screen keep access?
 - **Declined likes:** someone whose like the viewer declined stays visible
   until discovery hides them (PR #14).
-- **Media route:** `GET /v1/media/:id/:variant` still lets any active, ready
-  viewer read any approved photo by ID. It doesn't apply the discoverability
-  recheck. IDs are unguessable UUIDs, but tightening it is a media-module decision.
+- **Media route:** `GET /v1/media/:id/:variant` applies the same
+  `canViewProfile` check for non-owners (decided 2026-11-10), so a photo is
+  never reachable when its profile answers 404. The check also runs before a
+  `304`, so losing access stops cached revalidation too.
 - **Self-description publication:** once text review exists, decide whether it
   follows `genderDisplay` and goes through the same pending/approved split as prompt answers.
 - **Error codes:** new codes (for example from admin moderation) must be added to
