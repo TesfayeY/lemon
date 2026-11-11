@@ -3,19 +3,35 @@ import type { Db } from 'mongodb';
 import type { Auth } from 'firebase-admin/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
-import { canInteract, type UserDocument } from '../auth/account.js';
+import { canAuthenticate, canInteract, type UserDocument } from '../auth/account.js';
 import { createEmptyProfile, normalizeWhitespace, MAX_PROMPT_ANSWERS, type ProfileDocument, type PromptAnswerDocument } from './schema.js';
 import {
-  validateDisplayName, validateGenderIdentity, validateIntention,
+  validateDisplayName, validateGenderIdentity, validateGenderSelfDescription, validateIntention,
   validateCity, validateVisibility, validateBio, validatePromptAnswer,
   validatePromptId, validateHeight, validateOptionalText, validateLanguages, type FieldError,
 } from './validation.js';
-import { toSelfProfileDTO, toPublicProfileDTO } from './dto.js';
+import { toSelfProfileDTO, loadPublicProfiles } from './dto.js';
 import { recomputeReadiness } from './readiness-service.js';
 import { findCity } from '../catalogs/data.js';
 import { isDuplicateKeyError } from '../../indexes.js';
 
-export function createProfileRoutes(db: Db, auth: Auth) {
+/**
+ * Contextual access to another person's profile (spec §7: "eligible
+ * contextual access; no global searchable directory"). Implemented by the
+ * discovery service: the target must be someone the viewer could see in
+ * Discover right now, or someone with a legitimate relationship to the viewer
+ * (a pending like to the viewer, shown in Likes).
+ */
+export interface ProfileAccess {
+  canViewProfile(viewer: UserDocument, targetUserId: string): Promise<boolean>;
+}
+
+export interface ProfileRoutesOptions {
+  profileAccess: ProfileAccess;
+}
+
+export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOptions) {
+  const { profileAccess } = options;
   const router = Router();
   const requireAuth = createAuthMiddleware(auth);
   const users = db.collection<UserDocument>('users');
@@ -100,6 +116,15 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       const err = validateGenderIdentity(body['genderIdentity']);
       if (err) errors.push(err);
       else updates['genderIdentity'] = body['genderIdentity'];
+    }
+
+    if (body['genderSelfDescription'] !== undefined) {
+      const err = validateGenderSelfDescription(body['genderSelfDescription']);
+      if (err) errors.push(err);
+      else {
+        const text = body['genderSelfDescription'] === null ? '' : normalizeWhitespace(body['genderSelfDescription'] as string);
+        updates['genderSelfDescription'] = text === '' ? null : text;
+      }
     }
 
     if (body['genderDisplay'] !== undefined) {
@@ -244,11 +269,11 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    const profile = await findOrCreateProfile(user._id);
-    const answers = await promptAnswers.find({ ownerId: user._id }).toArray();
+    await findOrCreateProfile(user._id);
+    const preview = (await loadPublicProfiles(db, [user._id])).get(user._id)!;
 
     res.json({
-      data: toPublicProfileDTO(profile, user, answers),
+      data: preview,
       meta: { requestId: req.requestId },
     });
   });
@@ -469,14 +494,29 @@ export function createProfileRoutes(db: Db, auth: Auth) {
 
   /**
    * GET /v1/profiles/:id
-   * Public profile view — eligible contextual access only.
-   * No global searchable directory.
+   * Public profile view — eligible contextual access only; no global
+   * searchable directory. Anyone the viewer may not see (missing, inactive,
+   * paused, passed, blocked, outside their filters...) gets the same 404, so
+   * the response never reveals why.
    */
   router.get('/v1/profiles/:id', requireAuth, async (req: Request, res: Response) => {
     const { uid } = req as AuthenticatedRequest;
     const viewer = await users.findOne({ firebaseUid: uid });
-    // Only active, ready accounts may view other profiles (R-AUTH-08).
-    // Contextual eligibility (discovery/like/match) is added with Phase 07-09.
+    const targetUserId = String(req.params['id']);
+    const sendProfile = (data: unknown) => res.json({ data, meta: { requestId: req.requestId } });
+    const sendUnavailable = () => res.status(404).json({
+      error: { code: 'PROFILE_UNAVAILABLE', message: 'This profile is not available', retryable: false },
+      requestId: req.requestId,
+    });
+
+    // Your own profile is always visible to you, exactly as others see it
+    if (viewer && targetUserId === viewer._id && canAuthenticate(viewer.accountStatus)) {
+      await findOrCreateProfile(viewer._id);
+      sendProfile((await loadPublicProfiles(db, [viewer._id])).get(viewer._id)!);
+      return;
+    }
+
+    // Only active, ready accounts may view other profiles (R-AUTH-08)
     if (!viewer || !canInteract(viewer.accountStatus) || !viewer.profileReady) {
       res.status(403).json({
         error: { code: 'ACCOUNT_NOT_ELIGIBLE', message: 'Complete your profile to view others', retryable: false },
@@ -485,38 +525,24 @@ export function createProfileRoutes(db: Db, auth: Auth) {
       return;
     }
 
-    const targetUserId = req.params['id'];
-
+    // Defense in depth: the access check below applies these too
     const targetUser = await users.findOne({ _id: targetUserId });
-    if (!targetUser || targetUser.accountStatus !== 'active' || !targetUser.profileReady) {
-      res.status(404).json({
-        error: { code: 'PROFILE_UNAVAILABLE', message: 'This profile is not available', retryable: false },
-        requestId: req.requestId,
-      });
+    if (!targetUser || !canInteract(targetUser.accountStatus) || !targetUser.profileReady) {
+      sendUnavailable();
       return;
     }
 
-    const profile = await profiles.findOne({ userId: targetUserId });
-    if (!profile) {
-      res.status(404).json({
-        error: { code: 'PROFILE_UNAVAILABLE', message: 'This profile is not available', retryable: false },
-        requestId: req.requestId,
-      });
+    if (!(await profileAccess.canViewProfile(viewer, targetUserId))) {
+      sendUnavailable();
       return;
     }
 
-    // Published text only; an answer with an edit awaiting review stays visible
-    const answers = await promptAnswers.find({
-      ownerId: targetUserId,
-      approvedText: { $ne: null },
-    }).toArray();
-
-    const publicDTO = toPublicProfileDTO(profile, targetUser, answers);
-
-    res.json({
-      data: publicDTO,
-      meta: { requestId: req.requestId },
-    });
+    const projected = (await loadPublicProfiles(db, [targetUserId])).get(targetUserId);
+    if (!projected) {
+      sendUnavailable();
+      return;
+    }
+    sendProfile(projected);
   });
 
   return router;

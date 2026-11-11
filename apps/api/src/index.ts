@@ -9,7 +9,8 @@ import { createProfileRoutes } from './modules/profiles/routes.js';
 import { createPreferencesRoutes } from './modules/preferences/routes.js';
 import { createCatalogRoutes } from './modules/catalogs/routes.js';
 import { createMediaRoutes } from './modules/media/routes.js';
-import { createDiscoveryRoutes } from './modules/discovery/routes.js';
+import { createConfiguredDiscoveryService, createDiscoveryRoutes } from './modules/discovery/routes.js';
+import { createLikesRoutes } from './modules/likes/routes.js';
 import { createAdminRoutes } from './modules/admin/routes.js';
 
 async function main() {
@@ -29,17 +30,21 @@ async function main() {
   console.log(`Firebase initialized: ${config.FIREBASE_PROJECT_ID}`);
   const auth = getAuth(firebaseApp);
 
+  // One discovery service: Discover, profile reads and photo reads recheck the same rules
+  const discovery = createConfiguredDiscoveryService(db, config);
+
   // Create and start the Express app
   const app = createApp({
     mongoCheck: checkMongo,
     firebaseCheck: checkFirebase,
     routes: [
       createAuthRoutes(db, auth),
-      createProfileRoutes(db, auth),
+      createProfileRoutes(db, auth, { profileAccess: discovery }),
       createPreferencesRoutes(db, auth),
       createCatalogRoutes(),
-      createMediaRoutes(db, auth, config),
-      createDiscoveryRoutes(db, auth, config),
+      createMediaRoutes(db, auth, config, { profileAccess: discovery }),
+      createDiscoveryRoutes(db, auth, config, {}, discovery),
+      createLikesRoutes(db, auth, config),
       createAdminRoutes(db, client, auth, config),
     ],
   });

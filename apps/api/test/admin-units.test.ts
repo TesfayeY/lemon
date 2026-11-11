@@ -65,7 +65,7 @@ describe('prompt rejection reasons', () => {
     expect(owner.promptAnswers[0]!.rejectionReason).toMatchObject({ code: 'contact_details', action: 'replace' });
     expect(toSelfProfileDTO(createEmptyProfile('u1'), user, [{ ...answer, state: 'pending' }]).promptAnswers[0]!.rejectionReason).toBeNull();
 
-    const publicView = JSON.stringify(toPublicProfileDTO(createEmptyProfile('u1'), user, [answer]));
+    const publicView = JSON.stringify(toPublicProfileDTO(createEmptyProfile('u1'), user, [answer], []));
     expect(publicView).toContain('Published');
     for (const leak of ['rejection', 'contact_details', 'Has my number']) expect(publicView).not.toContain(leak);
   });

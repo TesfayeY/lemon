@@ -104,6 +104,9 @@ afterAll(async () => {
   await client?.close();
 });
 
+// Discover's access rules have their own tests; here only account status matters
+const profileAccess = { canViewProfile: async () => true };
+
 beforeEach(async () => {
   for (const name of ['users', 'profiles', 'preferences', 'promptAnswers', 'photos', 'photoSets', ADMIN_AUDIT_COLLECTION, 'auditLog']) {
     await db.collection(name).deleteMany({});
@@ -114,8 +117,8 @@ beforeEach(async () => {
     firebaseCheck: async () => true,
     routes: [
       createAuthRoutes(db, auth),
-      createProfileRoutes(db, auth),
-      createMediaRoutes(db, auth, { MEDIA_MAX_BYTES: 10 * 1024 * 1024, MEDIA_LOCAL_DIR: 'unused' }, storage),
+      createProfileRoutes(db, auth, { profileAccess }),
+      createMediaRoutes(db, auth, { MEDIA_MAX_BYTES: 10 * 1024 * 1024, MEDIA_LOCAL_DIR: 'unused' }, { profileAccess, storage }),
       createAdminRoutes(db, client, auth, { MEDIA_LOCAL_DIR: 'unused', ADMIN_RECENT_AUTH_MAX_AGE_SECONDS: 900 }, {
         storage,
         now: () => clock.now,

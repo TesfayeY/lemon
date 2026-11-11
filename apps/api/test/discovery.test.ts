@@ -275,8 +275,11 @@ describe('GET /v1/discovery: mutual eligibility', () => {
     expect(card.profile).toMatchObject({ userId: 'dawit', displayName: 'dawit', hometown: 'Asmara', stateCode: 'XA' });
     // Published text only; the edit awaiting review never leaks
     expect(card.profile.promptAnswers.map((a: { text: string }) => a.text)).toEqual(['Answer 0', 'Answer 1', 'Answer 2']);
-    expect(card.photos.map((p: { id: string }) => p.id)).toEqual(['dawit-photo-0', 'dawit-photo-1', 'dawit-photo-2']);
-    expect(card.photos[0].media).toEqual({ thumb: '/v1/media/dawit-photo-0/thumb', display: '/v1/media/dawit-photo-0/display' });
+    expect(card.profile.promptAnswers.map((a: { contentVersion: number }) => a.contentVersion)).toEqual([1, 1, 1]);
+    // Photos come from the shared public projection; the card has nothing else
+    expect(Object.keys(card)).toEqual(['profile']);
+    expect(card.profile.photos.map((p: { id: string }) => p.id)).toEqual(['dawit-photo-0', 'dawit-photo-1', 'dawit-photo-2']);
+    expect(card.profile.photos[0].media).toEqual({ thumb: '/v1/media/dawit-photo-0/thumb', display: '/v1/media/dawit-photo-0/display' });
 
     const body = JSON.stringify(res.body);
     for (const secret of ['1994-02-15', 'uid-dawit', 'firebaseUid', 'birthDate', 'accountStatus', 'discoverPaused',
@@ -372,9 +375,9 @@ describe('GET /v1/discovery: mutual eligibility', () => {
 });
 
 describe('GET /v1/discovery: pair exclusions', () => {
-  it('hides any outgoing like and pending incoming likes (those belong in Likes)', async () => {
+  it('hides any outgoing like, pending incoming likes (shown in Likes) and incoming likes the viewer declined', async () => {
     await woman('viewer');
-    for (const n of ['liked-pending', 'liked-declined', 'liked-accepted', 'likes-me', 'untouched']) await man(n);
+    for (const n of ['liked-pending', 'liked-declined', 'liked-accepted', 'likes-me', 'declined-by-me', 'untouched']) await man(n);
     const like = (fromUserId: string, toUserId: string, state: string) => ({
       _id: `${fromUserId}->${toUserId}`, fromUserId, toUserId, state,
       target: { kind: 'photo', id: `${toUserId}-photo-0`, contentVersion: 1 },
@@ -386,6 +389,7 @@ describe('GET /v1/discovery: pair exclusions', () => {
       like('viewer', 'liked-declined', 'declined'),
       like('viewer', 'liked-accepted', 'accepted'),
       like('likes-me', 'viewer', 'pending'),
+      like('declined-by-me', 'viewer', 'declined'),
     ]);
     const { seen } = await drain(makeApp(), 'viewer');
     expect(seen).toEqual(['untouched']);
