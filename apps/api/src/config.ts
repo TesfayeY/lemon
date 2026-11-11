@@ -14,6 +14,15 @@ const envSchema = z.object({
   // Media
   MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   MEDIA_LOCAL_DIR: z.string().min(1).default('.local-media'),
+
+  // Discovery (cursor HMAC secret is required in production; see modules/discovery/cursor.ts)
+  DISCOVERY_CURSOR_SECRET: z.string().min(32).optional(),
+  PASS_COOLDOWN_DAYS: z.coerce.number().int().positive().default(30),
+  // Likes: new likes per UTC day (P-10 proposes 8, pending owner confirmation)
+  LIKES_PER_UTC_DAY: z.coerce.number().int().min(0).default(8),
+
+  // Admin: account actions require a Firebase sign-in at most this many seconds old
+  ADMIN_RECENT_AUTH_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(900),
 });
 
 export type Env = z.infer<typeof envSchema>;

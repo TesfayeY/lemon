@@ -10,6 +10,7 @@ import { calculateAge } from '../src/modules/auth/adult-gate.js';
 import type { PromptAnswerDocument } from '../src/modules/profiles/schema.js';
 import type { UserDocument } from '../src/modules/auth/account.js';
 import type { ProfileDocument } from '../src/modules/profiles/schema.js';
+import type { PhotoDocument } from '../src/modules/media/schema.js';
 
 async function bootstrapUser(app: ReturnType<typeof buildApp>) {
   await request(app)
@@ -782,12 +783,76 @@ describe('toPublicProfileDTO', () => {
   };
 
   const answers: PromptAnswerDocument[] = [
+    { _id: 'a3', ownerId: 'u1', promptId: 'prompt-sunday', slot: 2, approvedText: 'Church, then brunch', pendingText: null, state: 'approved', revision: 3, publishedRevision: 3, createdAt: new Date(), updatedAt: new Date() },
     { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', slot: 0, approvedText: 'Buna', pendingText: 'Pending replacement', state: 'pending', revision: 2, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
     { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', slot: 1, approvedText: null, pendingText: 'Pending answer', state: 'pending', revision: 1, publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'a4', ownerId: 'u1', promptId: 'prompt-dream', slot: 1, approvedText: null, pendingText: 'Rejected answer', state: 'rejected', revision: 1, publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'other-owner-answer', ownerId: 'u2', promptId: 'prompt-home', slot: 0, approvedText: 'Not Selam', pendingText: null, state: 'approved', revision: 1, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
   ];
 
-  const dto = toPublicProfileDTO(profile, user, answers);
+  const photo = (id: string, order: number, state: PhotoDocument['state'], extra: Partial<PhotoDocument> = {}): PhotoDocument => ({
+    _id: id, ownerId: 'u1', state, order, width: 1080, height: 1350, contentVersion: 2,
+    originalPrivateKey: `quarantine/u1/${id}`, variantKeys: { thumb: `public-variants/${id}/thumb`, display: `public-variants/${id}/display` },
+    moderationReason: null, idempotencyKey: `idem-${id}`, requestHash: `hash-${id}`, reviewedAt: new Date(), deletedAt: null,
+    objectsPurgedAt: null, createdAt: new Date(), updatedAt: new Date(), ...extra,
+  });
+  const photos: PhotoDocument[] = [
+    photo('p-third', 2, 'approved'),
+    photo('p-first', 0, 'approved'),
+    photo('p-pending', 1, 'pending'),
+    photo('p-rejected', 3, 'rejected', { moderationReason: 'contact_details' }),
+    photo('p-deleted', 4, 'deleted', { deletedAt: new Date() }),
+    photo('p-processing', 5, 'processing'),
+    photo('p-failed', 6, 'failed'),
+    photo('p-second', 1, 'approved'),
+    photo('p-other-owner', 0, 'approved', { ownerId: 'u2' }),
+  ];
+
+  const dto = toPublicProfileDTO({ ...profile, genderSelfDescription: 'Femme, in my words' }, user, answers, photos);
   const serialized = JSON.stringify(dto);
+
+  it('contains exactly the allowlisted fields, at every level', () => {
+    expect(Object.keys(dto).sort()).toEqual([
+      'age', 'bio', 'cityName', 'displayName', 'education', 'genderIdentity', 'genderLabel', 'height',
+      'hometown', 'intention', 'intentionLabel', 'languages', 'occupation', 'photos', 'promptAnswers',
+      'religion', 'stateCode', 'userId',
+    ]);
+    for (const answer of dto.promptAnswers) {
+      expect(Object.keys(answer).sort()).toEqual(['contentVersion', 'id', 'promptId', 'promptText', 'text']);
+    }
+    for (const p of dto.photos) {
+      expect(Object.keys(p).sort()).toEqual(['contentVersion', 'height', 'id', 'media', 'order', 'width']);
+      expect(Object.keys(p.media).sort()).toEqual(['display', 'thumb']);
+    }
+  });
+
+  it('includes only approved photos of the owner, in order, as authenticated media paths', () => {
+    expect(dto.photos.map(p => p.id)).toEqual(['p-first', 'p-second', 'p-third']);
+    expect(dto.photos[0]).toEqual({
+      id: 'p-first', order: 0, width: 1080, height: 1350, contentVersion: 2,
+      media: { thumb: '/v1/media/p-first/thumb', display: '/v1/media/p-first/display' },
+    });
+    for (const leaked of ['p-pending', 'p-rejected', 'p-deleted', 'p-processing', 'p-failed', 'p-other-owner',
+      'quarantine/', 'public-variants/', 'idem-', 'hash-', 'contact_details', 'moderationReason', 'variantKeys',
+      'originalPrivateKey', 'reviewedAt', 'deletedAt']) {
+      expect(serialized).not.toContain(leaked);
+    }
+  });
+
+  it('caps photos at the profile maximum', () => {
+    const many = Array.from({ length: 8 }, (_, i) => photo(`many-${i}`, 7 - i, 'approved'));
+    const capped = toPublicProfileDTO(profile, user, [], many).photos;
+    expect(capped.map(p => p.order)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('versions each published answer with its publishedRevision, in slot order', () => {
+    expect(dto.promptAnswers.map(a => [a.id, a.contentVersion])).toEqual([['a1', 1], ['a3', 3]]);
+  });
+
+  it('keeps the gender self-description owner-only', () => {
+    expect(serialized).not.toContain('Femme, in my words');
+    expect(dto).not.toHaveProperty('genderSelfDescription');
+  });
 
   it('omits DOB, email, Firebase UID, status and moderation data', () => {
     for (const key of ['birthDate', 'email', 'firebaseUid', 'accountStatus', 'guardVersion', 'agreements',
@@ -815,10 +880,12 @@ describe('toPublicProfileDTO', () => {
   });
 
   it('only publishes approved prompt text, never pending replacements', () => {
-    expect(dto.promptAnswers.map(a => a.id)).toEqual(['a1']);
+    expect(dto.promptAnswers.map(a => a.id)).toEqual(['a1', 'a3']);
     expect(dto.promptAnswers[0]!.text).toBe('Buna');
     expect(serialized).not.toContain('Pending answer');
     expect(serialized).not.toContain('Pending replacement');
+    expect(serialized).not.toContain('Rejected answer');
+    expect(serialized).not.toContain('Not Selam');
     expect(serialized).not.toContain('pendingText');
   });
 });
@@ -870,6 +937,26 @@ describe('Prompt answer review states', () => {
 
     const own = await auth(request(app).get('/v1/me/profile'));
     expect(own.body.data.promptAnswers[0]).toMatchObject({ approvedText: 'Buna', pendingText: 'Coffee ceremony', state: 'pending' });
+  });
+
+  it('exposes the published revision as contentVersion and bumps it only when a new revision is published', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+    const published = async () => (await auth(request(app).get('/v1/me/profile/preview'))).body.data.promptAnswers;
+
+    const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
+    await approve(db, created.body.data.id);
+    expect(await published()).toEqual([expect.objectContaining({ text: 'Buna', contentVersion: 1 })]);
+
+    // An edit awaiting review changes neither the text nor the version others can like
+    await auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`)).send({ expectedRevision: 1, text: 'Three rounds' });
+    expect(await published()).toEqual([expect.objectContaining({ text: 'Buna', contentVersion: 1 })]);
+
+    await approve(db, created.body.data.id);
+    const stored = await db.collection<PromptAnswerDocument>('promptAnswers').findOne({ _id: created.body.data.id });
+    expect(await published()).toEqual([expect.objectContaining({ text: 'Three rounds', contentVersion: 2 })]);
+    expect(stored!.publishedRevision).toBe(2);
   });
 
   it('requires expectedRevision on answer edits and rejects stale ones', async () => {
@@ -991,6 +1078,47 @@ describe('Profile field validation', () => {
       const res = await edit(await freshApp(), { [field]: 'ሀ'.repeat(101) });
       expect(res.status).toBe(422);
       expect(res.body.error.fieldErrors[0].field).toBe(field);
+    }
+  });
+
+  it('saves an optional gender self-description for the owner only', async () => {
+    const db = createInMemoryDb();
+    const app = buildApp(undefined, db);
+    await bootstrapUser(app);
+    const own = async () => (await request(app).get('/v1/me/profile').set('Authorization', 'Bearer valid-token')).body.data;
+    expect((await own()).genderSelfDescription).toBeNull();
+
+    const user = (await db.collection<UserDocument>('users').findOne({ firebaseUid: 'firebase-uid-1' }))!;
+    const guardBefore = user.guardVersion;
+    const res = await edit(app, { genderIdentity: 'nonbinary', genderDisplay: 'public', genderSelfDescription: '  ሴት   and   femme ' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.updated).toContain('genderSelfDescription');
+    expect((await own()).genderSelfDescription).toBe('ሴት and femme');
+
+    // Not public until text review exists, even with gender shown on the profile
+    const preview = await request(app).get('/v1/me/profile/preview').set('Authorization', 'Bearer valid-token');
+    expect(preview.body.data.genderIdentity).toBe('nonbinary');
+    expect(JSON.stringify(preview.body)).not.toContain('femme');
+
+    // Only the catalog choice affects eligibility, so the description alone never bumps the guard
+    const guardAfterCategory = (await db.collection<UserDocument>('users').findOne({ _id: user._id }))!.guardVersion;
+    expect(guardAfterCategory).toBe(guardBefore + 1);
+    await request(app).patch('/v1/me/profile').set('Authorization', 'Bearer valid-token')
+      .send({ expectedRevision: 2, genderSelfDescription: 'femme' });
+    expect((await db.collection<UserDocument>('users').findOne({ _id: user._id }))!.guardVersion).toBe(guardAfterCategory);
+
+    // Blank or null clears it
+    await request(app).patch('/v1/me/profile').set('Authorization', 'Bearer valid-token')
+      .send({ expectedRevision: 3, genderSelfDescription: '   ' });
+    expect((await own()).genderSelfDescription).toBeNull();
+  });
+
+  it('limits the gender self-description to 100 grapheme clusters', async () => {
+    expect((await edit(await freshApp(), { genderSelfDescription: 'ሀ'.repeat(100) })).status).toBe(200);
+    for (const value of ['ሀ'.repeat(101), 42, ['femme']]) {
+      const res = await edit(await freshApp(), { genderSelfDescription: value });
+      expect(res.status).toBe(422);
+      expect(res.body.error.fieldErrors[0].field).toBe('genderSelfDescription');
     }
   });
 

@@ -43,6 +43,7 @@ void main() {
 
       expect(profile.hometownDisplay, FieldVisibility.private);
       expect(profile.languages, ['tigrinya', 'english']);
+      expect(profile.genderSelfDescription, isNull);
       final edited = profile.promptAnswers.first;
       expect(edited.state, ReviewState.pending);
       expect(edited.approvedText, 'The full coffee ceremony, three rounds.');
@@ -61,6 +62,13 @@ void main() {
         profile.promptAnswers.single.text,
         'The full coffee ceremony, three rounds.',
       );
+      expect(profile.promptAnswers.single.contentVersion, 1);
+      expect(profile.photos.map((p) => p.order), [0, 1]);
+      expect(profile.photos.last.contentVersion, 2);
+      expect(
+        profile.photos.first.media['display'],
+        '/v1/media/3c9d2e1f-7a6b-4c5d-8e9f-0a1b2c3d4e5f/display',
+      );
       expect(profile.toJson(), json);
     });
 
@@ -78,7 +86,7 @@ void main() {
       final catalogs = Catalogs.fromJson(json);
 
       expect(catalogs.cities.single.stateCode, 'TX');
-      expect(catalogs.languages.map((l) => l.id), ['amharic', 'tigrinya']);
+      expect(catalogs.languages.map((l) => l.id), ['amharic', 'tigrinya', 'english']);
       expect(catalogs.toJson(), json);
     });
 

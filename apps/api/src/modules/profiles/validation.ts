@@ -1,4 +1,4 @@
-import { graphemeLength, normalizeWhitespace, OPTIONAL_TEXT_MAX } from './schema.js';
+import { graphemeLength, normalizeWhitespace, GENDER_SELF_DESCRIPTION_MAX, OPTIONAL_TEXT_MAX } from './schema.js';
 import { isValidCityId, isValidGenderId, isValidIntentionId, isValidLanguageId, isValidPromptId } from '../catalogs/data.js';
 
 export interface FieldError {
@@ -18,6 +18,17 @@ export function validateDisplayName(name: unknown): FieldError | null {
 export function validateGenderIdentity(id: unknown): FieldError | null {
   if (typeof id !== 'string') return { field: 'genderIdentity', message: 'Must be a string' };
   if (!isValidGenderId(id)) return { field: 'genderIdentity', message: 'Unknown gender category' };
+  return null;
+}
+
+/** Optional free text; null (or blank) clears it. The catalog choice stays the matching category. */
+export function validateGenderSelfDescription(value: unknown): FieldError | null {
+  const field = 'genderSelfDescription';
+  if (value === null) return null;
+  if (typeof value !== 'string') return { field, message: 'Must be a string or null' };
+  if (graphemeLength(normalizeWhitespace(value)) > GENDER_SELF_DESCRIPTION_MAX) {
+    return { field, message: `Must be ${GENDER_SELF_DESCRIPTION_MAX} characters or fewer` };
+  }
   return null;
 }
 

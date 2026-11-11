@@ -371,7 +371,7 @@ components:
         createdAt: { type: string, format: date-time }
 
     PublicPhoto:
-      description: Shape other viewers will receive once profiles embed photos (approved only).
+      description: Approved photo as other viewers receive it, embedded in `PublicProfile.photos` (`../openapi.yaml`).
       type: object
       required: [id, order, width, height, contentVersion, media]
       properties:

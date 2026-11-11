@@ -11,6 +11,7 @@ import type { MediaStorage } from '../../adapters/media/storage.js';
 import { isDuplicateKeyError } from '../../indexes.js';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
 import { canAuthenticate, canInteract, type UserDocument } from '../auth/account.js';
+import type { ProfileAccess } from '../profiles/routes.js';
 import { recomputeReadiness } from '../profiles/readiness-service.js';
 import { toOwnerPhotoDTO } from './dto.js';
 import { bumpPhotoSetRevision, findOrCreatePhotoSet, purgePhotoObjects } from './photo-set.js';
@@ -21,6 +22,15 @@ import {
 } from './schema.js';
 
 export type MediaRoutesConfig = Pick<Env, 'MEDIA_MAX_BYTES' | 'MEDIA_LOCAL_DIR'>;
+
+export interface MediaRoutesOptions {
+  /**
+   * Who may see another member's approved photos. Must be the same check as
+   * `GET /v1/profiles/:id`, so a photo is never reachable when its profile is not.
+   */
+  profileAccess: ProfileAccess;
+  storage?: MediaStorage;
+}
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 /** Each failed attempt means another upload or reorder committed, so this bounds contention. */
@@ -36,8 +46,10 @@ export function createMediaRoutes(
   db: Db,
   auth: Auth,
   config: MediaRoutesConfig,
-  storage: MediaStorage = new LocalMediaStorage(config.MEDIA_LOCAL_DIR),
+  options: MediaRoutesOptions,
 ) {
+  const { profileAccess } = options;
+  const storage = options.storage ?? new LocalMediaStorage(config.MEDIA_LOCAL_DIR);
   const router = Router();
   const requireAuth = createAuthMiddleware(auth);
   const users = db.collection<UserDocument>('users');
@@ -413,7 +425,8 @@ export function createMediaRoutes(
   /**
    * GET /v1/media/:assetId/:variant
    * Stream a thumb or display variant after rechecking access on every request.
-   * Originals and quarantine objects are never served.
+   * Non-owners also need profile access to the photo's owner (the same check as
+   * `GET /v1/profiles/:id`). Originals and quarantine objects are never served.
    */
   router.get('/v1/media/:assetId/:variant', requireAuth, async (req: Request, res: Response) => {
     const variant = String(req.params['variant']) as PhotoVariant;
@@ -439,7 +452,8 @@ export function createMediaRoutes(
       visible = photo.state === PhotoState.PENDING || photo.state === PhotoState.APPROVED || photo.state === PhotoState.REJECTED;
     } else if (photo && photo.state === PhotoState.APPROVED) {
       const owner = await users.findOne({ _id: photo.ownerId });
-      visible = owner !== null && canInteract(owner.accountStatus) && owner.profileReady;
+      visible = owner !== null && canInteract(owner.accountStatus) && owner.profileReady
+        && (await profileAccess.canViewProfile(viewer, photo.ownerId));
     }
     if (!photo || !visible) {
       sendError(req, res, 404, 'MEDIA_UNAVAILABLE', 'This photo is not available');

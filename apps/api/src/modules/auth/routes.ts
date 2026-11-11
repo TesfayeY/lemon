@@ -97,7 +97,16 @@ export function createAuthRoutes(db: Db, auth: Auth) {
     const { uid } = req as AuthenticatedRequest;
     const user = await users.findOne({ firebaseUid: uid });
 
-    if (!user || !canAuthenticate(user.accountStatus)) {
+    // Not bootstrapped yet: same answer as every other own-resource route
+    if (!user) {
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
+        requestId: req.requestId,
+      });
+      return;
+    }
+
+    if (!canAuthenticate(user.accountStatus)) {
       res.status(403).json({
         error: {
           code: 'ACCOUNT_RESTRICTED',
