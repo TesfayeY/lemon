@@ -216,6 +216,24 @@ describe('GET /v1/me', () => {
     const res = await request(app).get('/v1/me');
     expect(res.status).toBe(401);
   });
+
+  it('answers 404 NOT_FOUND before bootstrap, like every other own-resource route', async () => {
+    const app = buildApp(createMockAuth(), createMockDb(createMockCollection()));
+    const res = await request(app).get('/v1/me').set('Authorization', 'Bearer valid-token');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toEqual({ code: 'NOT_FOUND', message: 'Account not found', retryable: false });
+  });
+
+  it('answers 403 ACCOUNT_RESTRICTED for a suspended account', async () => {
+    const col = createMockCollection();
+    const app = buildApp(createMockAuth(), createMockDb(col));
+    await request(app).post('/v1/me/bootstrap').set('Authorization', 'Bearer valid-token');
+    [...col.store.values()][0]!['accountStatus'] = 'suspended';
+
+    const res = await request(app).get('/v1/me').set('Authorization', 'Bearer valid-token');
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('ACCOUNT_RESTRICTED');
+  });
 });
 
 describe('PATCH /v1/me/onboarding', () => {

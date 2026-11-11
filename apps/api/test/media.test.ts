@@ -156,22 +156,31 @@ interface Harness {
   app: ReturnType<typeof createApp>;
   db: Db;
   storage: InMemoryMediaStorage;
+  /** Profile access shared by the profile and media routes; tests may replace it. */
+  access: { canViewProfile: (viewer: UserDocument, targetUserId: string) => Promise<boolean> };
 }
 
 function setup(options: { maxBytes?: number; interleave?: boolean } = {}): Harness {
   const db = createInMemoryDb({ interleave: options.interleave ?? false });
   const auth = createMultiUserAuth();
   const storage = new InMemoryMediaStorage();
+  const access: Harness['access'] = { canViewProfile: async () => true };
+  const profileAccess = { canViewProfile: (viewer: UserDocument, id: string) => access.canViewProfile(viewer, id) };
   const app = createApp({
     mongoCheck: async () => true,
     firebaseCheck: async () => true,
     routes: [
       createAuthRoutes(db, auth),
-      createProfileRoutes(db, auth),
-      createMediaRoutes(db, auth, { MEDIA_MAX_BYTES: options.maxBytes ?? 10 * 1024 * 1024, MEDIA_LOCAL_DIR: 'unused' }, storage),
+      createProfileRoutes(db, auth, { profileAccess }),
+      createMediaRoutes(
+        db,
+        auth,
+        { MEDIA_MAX_BYTES: options.maxBytes ?? 10 * 1024 * 1024, MEDIA_LOCAL_DIR: 'unused' },
+        { profileAccess, storage },
+      ),
     ],
   });
-  return { app, db, storage };
+  return { app, db, storage, access };
 }
 
 const userId = (name: string) => `user-${name}`;
@@ -814,6 +823,51 @@ describe('GET /v1/media/:assetId/:variant (R-MEDIA-04, R-MEDIA-05)', () => {
       expect(res.status).toBe(404);
       expect(errorCode(res)).toBe('MEDIA_UNAVAILABLE');
     }
+  });
+
+  it('serves another member\'s photos only while their profile is viewable (same check as GET /v1/profiles/:id)', async () => {
+    const h = setup();
+    const [photoId] = await makeReady(h, 'alice');
+    await makeReady(h, 'bob');
+    const asked: [string, string][] = [];
+    let allowed = true;
+    h.access.canViewProfile = async (viewer, targetUserId) => {
+      asked.push([viewer._id, targetUserId]);
+      return allowed;
+    };
+
+    const first = await fetchMedia(h, 'bob', `/v1/media/${photoId}/display`);
+    expect(first.status).toBe(200);
+    expect(asked).toEqual([[userId('bob'), userId('alice')]]);
+
+    // Losing access (passed, liked, blocked, ...) also stops revalidation and thumbnails
+    allowed = false;
+    for (const req of [
+      fetchMedia(h, 'bob', `/v1/media/${photoId}/display`).set('If-None-Match', first.headers['etag']!),
+      fetchMedia(h, 'bob', `/v1/media/${photoId}/thumb`),
+    ]) {
+      const res = await req;
+      expect(res.status).toBe(404);
+      expect(errorCode(res)).toBe('MEDIA_UNAVAILABLE');
+    }
+  });
+
+  it('never asks profile access for the owner\'s own photos or for unservable assets', async () => {
+    const h = setup();
+    const [approved] = await makeReady(h, 'alice');
+    await makeReady(h, 'bob');
+    const pending = await uploadOk(h, 'alice');
+    let calls = 0;
+    h.access.canViewProfile = async () => {
+      calls++;
+      return false;
+    };
+
+    expect((await fetchMedia(h, 'alice', `/v1/media/${approved}/display`)).status).toBe(200);
+    expect((await fetchMedia(h, 'alice', `/v1/media/${pending}/thumb`)).status).toBe(200);
+    expect((await fetchMedia(h, 'bob', `/v1/media/${pending}/thumb`)).status).toBe(404);
+    expect((await fetchMedia(h, 'bob', `/v1/media/${uuidv4()}/thumb`)).status).toBe(404);
+    expect(calls).toBe(0);
   });
 
   it('denies a viewer who is not active and ready', async () => {

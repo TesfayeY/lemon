@@ -7,11 +7,12 @@
  * - The state change is a compare-and-set on `pending`, so two reviewers
  *   cannot both apply a decision.
  *
- * TODO(Phase 13): write the state change and audit entry in one Mongo
- * transaction and expose this through the role-checked admin API.
+ * The role-checked admin API (modules/admin) runs applyPhotoDecision and its
+ * adminAuditLog entry in one Mongo transaction. reviewPhoto below is the
+ * dev-only script path and keeps its legacy auditLog entry.
  */
 
-import type { Db } from 'mongodb';
+import type { ClientSession, Db } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
 import { recomputeReadiness } from '../profiles/readiness-service.js';
 import { bumpPhotoSetRevision } from './photo-set.js';
@@ -53,8 +54,79 @@ export class ReviewError extends Error {
   }
 }
 
+export interface PhotoDecisionResult {
+  photo: PhotoDocument; // as it was before the decision
+  before: { state: PhotoDocument['state']; moderationReason: string | null };
+  after: { state: PhotoDocument['state']; moderationReason: string | null };
+  decidedAt: Date;
+}
+
+function validateDecision(decision: ReviewDecision, reason: string | null): void {
+  if (decision !== 'approve' && decision !== 'reject') {
+    throw new ReviewError('INVALID_INPUT', 'Decision must be "approve" or "reject"');
+  }
+  if (decision === 'reject' && !isRejectionReasonCode(reason)) {
+    throw new ReviewError(
+      'INVALID_INPUT',
+      `Rejection reason must be one of: ${Object.keys(REJECTION_REASONS).join(', ')}`,
+    );
+  }
+}
+
 /**
- * Approve or reject a pending photo.
+ * Compare-and-set a pending photo to approved/rejected. Writes only the photo,
+ * so callers can run it inside their own transaction (pass `session`) next to
+ * an audit entry; finishPhotoDecision runs the follow-ups after commit.
+ */
+export async function applyPhotoDecision(
+  db: Db,
+  photoId: string,
+  decision: ReviewDecision,
+  reason: string | null,
+  options: { session?: ClientSession; now?: Date } = {},
+): Promise<PhotoDecisionResult> {
+  validateDecision(decision, reason);
+  const { session } = options;
+
+  const photos = db.collection<PhotoDocument>('photos');
+  const photo = await photos.findOne({ _id: photoId }, { session });
+  if (!photo) throw new ReviewError('PHOTO_NOT_FOUND', `Photo ${photoId} not found`);
+  if (photo.state !== PhotoState.PENDING) {
+    throw new ReviewError('PHOTO_NOT_PENDING', `Photo ${photoId} is ${photo.state}, not pending`);
+  }
+
+  const decidedAt = options.now ?? new Date();
+  const after = {
+    state: decision === 'approve' ? PhotoState.APPROVED : PhotoState.REJECTED,
+    moderationReason: decision === 'reject' ? reason : null,
+  };
+
+  const result = await photos.updateOne(
+    { _id: photoId, state: PhotoState.PENDING },
+    { $set: { ...after, reviewedAt: decidedAt, updatedAt: decidedAt } },
+    { session },
+  );
+  if (result.matchedCount === 0) {
+    throw new ReviewError('PHOTO_NOT_PENDING', `Photo ${photoId} was changed during review`);
+  }
+
+  return {
+    photo,
+    before: { state: photo.state, moderationReason: photo.moderationReason },
+    after,
+    decidedAt,
+  };
+}
+
+/** After the decision commits: a rejection leaves the orderable set; readiness may change. */
+export async function finishPhotoDecision(db: Db, ownerId: string, decision: ReviewDecision): Promise<void> {
+  if (decision === 'reject') await bumpPhotoSetRevision(db, ownerId);
+  await recomputeReadiness(db, ownerId);
+}
+
+/**
+ * Approve or reject a pending photo (dev script path; the admin API wraps
+ * applyPhotoDecision in a transaction with its own audit entry instead).
  * `reason` is required for rejections (a REJECTION_REASONS code) and an
  * optional audit note for approvals.
  */
@@ -68,36 +140,7 @@ export async function reviewPhoto(
   if (typeof actorId !== 'string' || actorId.trim().length === 0) {
     throw new ReviewError('INVALID_INPUT', 'A reviewer actorId is required');
   }
-  if (decision !== 'approve' && decision !== 'reject') {
-    throw new ReviewError('INVALID_INPUT', 'Decision must be "approve" or "reject"');
-  }
-  if (decision === 'reject' && !isRejectionReasonCode(reason)) {
-    throw new ReviewError(
-      'INVALID_INPUT',
-      `Rejection reason must be one of: ${Object.keys(REJECTION_REASONS).join(', ')}`,
-    );
-  }
-
-  const photos = db.collection<PhotoDocument>('photos');
-  const photo = await photos.findOne({ _id: photoId });
-  if (!photo) throw new ReviewError('PHOTO_NOT_FOUND', `Photo ${photoId} not found`);
-  if (photo.state !== PhotoState.PENDING) {
-    throw new ReviewError('PHOTO_NOT_PENDING', `Photo ${photoId} is ${photo.state}, not pending`);
-  }
-
-  const now = new Date();
-  const after = {
-    state: decision === 'approve' ? PhotoState.APPROVED : PhotoState.REJECTED,
-    moderationReason: decision === 'reject' ? reason : null,
-  };
-
-  const result = await photos.updateOne(
-    { _id: photoId, state: PhotoState.PENDING },
-    { $set: { ...after, reviewedAt: now, updatedAt: now } },
-  );
-  if (result.matchedCount === 0) {
-    throw new ReviewError('PHOTO_NOT_PENDING', `Photo ${photoId} was changed during review`);
-  }
+  const { photo, before, after, decidedAt } = await applyPhotoDecision(db, photoId, decision, reason);
 
   const entry: AuditLogDocument = {
     _id: uuidv4(),
@@ -107,15 +150,13 @@ export async function reviewPhoto(
     targetId: photoId,
     targetOwnerId: photo.ownerId,
     reason,
-    before: { state: photo.state, moderationReason: photo.moderationReason },
+    before,
     after,
-    createdAt: now,
+    createdAt: decidedAt,
   };
   await db.collection<AuditLogDocument>('auditLog').insertOne(entry);
 
-  // A rejected photo leaves the orderable set
-  if (decision === 'reject') await bumpPhotoSetRevision(db, photo.ownerId);
-  await recomputeReadiness(db, photo.ownerId);
+  await finishPhotoDecision(db, photo.ownerId, decision);
 
-  return { ...photo, ...after, reviewedAt: now, updatedAt: now };
+  return { ...photo, ...after, reviewedAt: decidedAt, updatedAt: decidedAt };
 }

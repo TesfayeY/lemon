@@ -51,3 +51,6 @@ coverage/
 
 # Local media storage (MEDIA_LOCAL_DIR)
 .local-media*/
+
+# Claude Code agent worktrees
+.claude/worktrees/

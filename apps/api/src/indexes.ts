@@ -1,4 +1,7 @@
 import type { Db } from 'mongodb';
+import { ensureDiscoveryIndexes } from './modules/discovery/schema.js';
+import { ensureQuotaIndexes } from './modules/likes/quota.js';
+import { ensureAdminIndexes } from './modules/admin/audit.js';
 
 /**
  * Unique indexes that enforce one-per-owner invariants.
@@ -23,6 +26,13 @@ export async function ensureIndexes(db: Db): Promise<void> {
       { ownerId: 1, idempotencyKey: 1 },
       { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
     ),
+    ensureDiscoveryIndexes(db),
+    // Likes: one per direction ever in v1, sender-scoped idempotency, incoming list
+    db.collection('likes').createIndex({ fromUserId: 1, toUserId: 1 }, { unique: true }),
+    db.collection('likes').createIndex({ fromUserId: 1, idempotencyKey: 1 }, { unique: true }),
+    db.collection('likes').createIndex({ toUserId: 1, state: 1, createdAt: -1 }),
+    ensureQuotaIndexes(db),
+    ensureAdminIndexes(db),
   ]);
 }
 

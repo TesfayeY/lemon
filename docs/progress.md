@@ -9,12 +9,12 @@
 | 02 | UI system and component gallery | Done | 2026-10-22 |
 | 03 | Auth, adult gate, guarded routes | Done | 2026-10-22 |
 | 04 | Profiles, preferences, public projection | In Progress (awaiting P-03) | 2026-10-25 |
-| 05 | Private media and moderation foundation | Not Started | |
-| 06 | Complete onboarding and profile editing | Not Started | |
-| 07 | Discovery API and Flutter experience | Not Started | |
-| 08 | Likes, quota, incoming-like UI | Not Started | |
+| 05 | Private media and moderation foundation | In Progress (photo uploads merged; Firebase Storage awaits P-04) | 2026-10-26 |
+| 06 | Complete onboarding and profile editing | In Progress (`feat/onboarding-flow`) | 2026-11-10 |
+| 07 | Discovery API and Flutter experience | In Progress (API on `feat/discovery`) | 2026-11-10 |
+| 08 | Likes, quota, incoming-like UI | In Progress (quota merged; API on `feat/likes`) | 2026-11-10 |
 | 09 | Transactional matches and outbox | Not Started | |
-| 10 | Firestore rooms, access rules, provisioning | Not Started | |
+| 10 | Firestore rooms, access rules, provisioning | In Progress (rules + emulator tests merged; provisioning waits on Phase 09) | 2026-10-25 |
 | 11 | Reliable messaging and conversation UI | Not Started | |
 | 12 | Block, unmatch, report with race safety | Not Started | |
 | 13 | Moderation/admin workflow | Not Started | |
@@ -26,7 +26,11 @@
 
 ## Current Focus
 
-Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open until the owner answers P-03 (which sensitive fields ship at launch) and reviews the seed languages catalog. Next: Phase 05 (private media and moderation foundation).
+Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open until the owner answers P-03 (which sensitive fields ship at launch) and reviews the seed languages catalog. Work now runs in parallel on feature branches (see `docs/git-workflow.md`); each feature's details live in `docs/features/<name>.md`.
+
+- Merged: photo uploads and review (Phase 05), daily like quota (Phase 08), Firestore room rules and emulator tests (Phase 10), oxlint setup
+- In progress: `feat/onboarding-flow` (Phase 06 Flutter), `feat/discovery` (Phase 07 API), `feat/likes` (Phase 08 API)
+- Waiting on owner: P-03, P-04 (Firebase Storage adapter), P-07 (launch metros), P-10 (like allowance)
 
 ## Toolchains Installed
 
