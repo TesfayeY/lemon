@@ -66,6 +66,17 @@ paths:
   /v1/me/onboarding:
     patch:
       summary: Save birth date and/or terms acceptance
+      description: |
+        Only while `accountStatus` is `onboarding`. A refused field saves
+        nothing from the request (a refused birth date also discards
+        `termsAccepted`).
+
+        An under-18 birth date locks the age gate: the server records that a
+        date was refused (never the date itself), clears any birth date saved
+        earlier, and answers that and every later `birthDate` submission,
+        valid or not, with 422 `AGE_INELIGIBLE`. There is no self-service
+        unlock; date changes go through support (specification §4.1).
+        `termsAccepted` on its own is still accepted.
       requestBody:
         required: true
         content:
@@ -88,8 +99,19 @@ paths:
         '400': { $ref: '#/components/responses/NoUpdates' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/AccountRestricted' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: '`INVALID_STATE`: the account is no longer onboarding'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: |
+            `VALIDATION_ERROR` (malformed or future date, `termsAccepted` not
+            `true`) or `AGE_INELIGIBLE` (under 18, or any birth date once the
+            age gate is locked). Nothing from the request is saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /v1/catalogs:
     get:
@@ -973,7 +995,8 @@ components:
           a missing own resource or unknown route).
         - Accounts: 403 `ACCOUNT_RESTRICTED` (suspended or being deleted),
           `ACCOUNT_NOT_ELIGIBLE` (not active and profile-ready); 422
-          `AGE_INELIGIBLE` (under 18); 409 `INVALID_STATE` (onboarding step
+          `AGE_INELIGIBLE` (under 18; after one refused under-18 date, every
+          later birth date); 409 `INVALID_STATE` (onboarding step
           after onboarding ended); 400 `NO_UPDATES` (no editable field sent).
         - Profiles and prompts: 422 `VALIDATION_ERROR`, `PROMPT_LIMIT` (three
           answers already); 409 `REVISION_CONFLICT` (with `currentRevision`),

@@ -195,6 +195,11 @@ describe('Live responses match the contract', () => {
       res = await request(app).patch('/v1/me/onboarding').set('Authorization', as('alice')).send(body);
       check(res, '/v1/me/onboarding', 'patch');
     }
+    // The under-18 date locked the age gate: an adult date is now refused the same way
+    res = await request(app).patch('/v1/me/onboarding').set('Authorization', as('alice')).send({ birthDate: '1995-03-10' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('AGE_INELIGIBLE');
+    check(res, '/v1/me/onboarding', 'patch');
     await request(app).patch('/v1/me/onboarding').set('Authorization', as('bob'))
       .send({ birthDate: '1992-11-02', termsAccepted: true });
     check(await request(app).get('/v1/me').set('Authorization', as('alice')), '/v1/me', 'get');

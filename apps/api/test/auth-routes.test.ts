@@ -303,6 +303,77 @@ describe('PATCH /v1/me/onboarding', () => {
     expect(res.body.error.code).toBe('NO_UPDATES');
   });
 
+  describe('age gate lock', () => {
+    const submit = (body: Record<string, unknown>) =>
+      request(app).patch('/v1/me/onboarding').set('Authorization', 'Bearer valid-token').send(body);
+    const userDoc = () => [...col.store.values()][0]!;
+
+    it('records a refused under-18 date without the date, then refuses every later birth date the same way', async () => {
+      const first = await submit({ birthDate: '2015-06-15' });
+      expect(first.status).toBe(422);
+      expect(first.body.error).toEqual({ code: 'AGE_INELIGIBLE', message: 'You must be at least 18 years old to use Lemon', retryable: false });
+
+      expect(userDoc()['ageGate']).toEqual({ blockedAt: expect.any(Date) });
+      expect(userDoc()).toMatchObject({ birthDate: null, adultEligible: false });
+      expect(JSON.stringify(userDoc())).not.toContain('2015');
+
+      // Earlier years and even malformed dates: same answer, nothing saved
+      for (const birthDate of ['1990-06-15', '2000-01-01', 'not-a-date', 12345]) {
+        const retry = await submit({ birthDate });
+        expect(retry.status, `${birthDate}`).toBe(422);
+        expect(retry.body.error).toEqual(first.body.error);
+      }
+      expect(userDoc()).toMatchObject({ birthDate: null, adultEligible: false, ageGate: { blockedAt: expect.any(Date) } });
+    });
+
+    it('saves no terms acceptance from a request whose birth date is refused', async () => {
+      expect((await submit({ birthDate: '2015-06-15', termsAccepted: true })).status).toBe(422);
+      expect((userDoc()['agreements'] as { termsVersion: string | null }).termsVersion).toBeNull();
+
+      expect((await submit({ birthDate: '1990-06-15', termsAccepted: true })).status).toBe(422);
+      expect((userDoc()['agreements'] as { termsVersion: string | null }).termsVersion).toBeNull();
+      expect(userDoc()['birthDate']).toBeNull();
+    });
+
+    it('clears an adult date saved earlier, so the account is no longer adult-eligible', async () => {
+      expect((await submit({ birthDate: '1990-06-15' })).status).toBe(200);
+      expect(userDoc()).toMatchObject({ birthDate: '1990-06-15', adultEligible: true });
+
+      expect((await submit({ birthDate: '2015-06-15' })).status).toBe(422);
+      expect(userDoc()).toMatchObject({ birthDate: null, adultEligible: false, ageGate: { blockedAt: expect.any(Date) } });
+      expect((await submit({ birthDate: '1990-06-15' })).body.error.code).toBe('AGE_INELIGIBLE');
+    });
+
+    it('does not save an adult date when an under-18 submission locked the gate after this request read the account', async () => {
+      const save = col.updateOne.getMockImplementation()!;
+      col.updateOne.mockImplementationOnce(async (filter, update) => {
+        // A concurrent request with an under-18 date commits its lock first
+        Object.assign(userDoc(), { ageGate: { blockedAt: new Date() }, birthDate: null, adultEligible: false });
+        return save(filter, update);
+      });
+
+      const res = await submit({ birthDate: '1990-06-15', termsAccepted: true });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('AGE_INELIGIBLE');
+      expect(userDoc()).toMatchObject({ birthDate: null, adultEligible: false });
+      expect((userDoc()['agreements'] as { termsVersion: string | null }).termsVersion).toBeNull();
+    });
+
+    it('still accepts terms on their own, and never shows the lock in the account snapshot', async () => {
+      await submit({ birthDate: '2015-06-15' });
+      const terms = await submit({ termsAccepted: true });
+      expect(terms.status).toBe(200);
+      expect(terms.body.data.updated).toEqual(['agreements']);
+
+      const me = await request(app).get('/v1/me').set('Authorization', 'Bearer valid-token');
+      expect(me.status).toBe(200);
+      expect(me.body.data).not.toHaveProperty('ageGate');
+      expect(JSON.stringify(me.body)).not.toContain('blockedAt');
+      expect(me.body.data).toMatchObject({ birthDate: null, adultEligible: false });
+      expect(me.body.data.readiness.missing).toContain('adultEligible');
+    });
+  });
+
   it('rejects if account is not in onboarding state', async () => {
     // Change status to active
     const doc = [...col.store.values()][0]!;
