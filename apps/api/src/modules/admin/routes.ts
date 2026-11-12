@@ -98,7 +98,7 @@ export function createAdminRoutes(
 ) {
   const router = Router();
   const storage = deps.storage ?? new LocalMediaStorage(config.MEDIA_LOCAL_DIR);
-  const service = createAdminService(db, client, { now: deps.now, afterAuditWrite: deps.afterAuditWrite });
+  const service = createAdminService(db, client, auth, { now: deps.now, afterAuditWrite: deps.afterAuditWrite });
 
   const requireAuth = createAuthMiddleware(auth);
   const guard = (permission: Parameters<typeof requireStaff>[0], recentAuth = false) => [

@@ -23,7 +23,9 @@
 - **Suspend and restore** (spec Phase 13 lists them):
   - Each runs in one transaction: a CAS on account status plus `guardVersion`, a `guardVersion` increment, and the audit entry.
   - Suspension stops new actions immediately: `/v1/me` returns 403, the profile is unavailable and photos aren't served. Readiness is recomputed and cleared.
-  - Restore returns the account to its previous status (`active` or `onboarding`) and recomputes readiness. It reopens nothing else.
+  - Every own-account route (`/v1/me`, `/v1/me/onboarding`, `/v1/me/profile`, `/v1/me/profile/preview`, `/v1/me/prompts*`, `/v1/me/preferences`, photos and likes) answers `403 ACCOUNT_RESTRICTED` for a suspended, deleting or deleted account, through the shared `loadOwnAccount` helper (`auth/load-account.ts`) or the media/likes `loadAccount` helpers. A suspended member can't edit their profile, prompts or preferences even from a session that is still signed in.
+  - After the suspension commits, the service revokes the member's Firebase refresh tokens (`auth.revokeRefreshTokens`), so existing sessions end: every ID token issued before the revocation fails `verifyIdToken(token, true)` with `TOKEN_REVOKED`. MongoDB status stays authoritative. If revocation fails, the error code is logged with the request ID only (no UID, user ID or email) and the suspension still returns 200. Revocation never runs inside the transaction or for a suspension that rolled back.
+  - Restore returns the account to its previous status (`active` or `onboarding`) and recomputes readiness. It reopens nothing else and revokes nothing; the member signs in again.
   - Staff can't act on their own account or content (`SELF_ACTION_FORBIDDEN`).
 - **Audit log** (`adminAuditLog`, append-only by service contract: the module exposes append and per-target reads only). Each entry records actor UID and role, action, target type/id/owner, catalog reason, optional internal note, before/after state, request ID and timestamp. Entries never carry tokens, emails, DOB or answer text; prompt decisions store a SHA-256 of the decided text instead. IDs are UUIDv7, so entries with the same timestamp still list in insertion order.
 
@@ -128,7 +130,7 @@ npx tsx ../../scripts/admin-review.ts approve-prompt <id> --revision <n>
 ## Follow-ups
 
 - **Phase 12:** the report queue and case workflow (new → assigned → in review → resolved/dismissed, case revisions, restricted evidence access with recent sign-in). These reuse `requireStaff`, `appendAuditEntry` and the queue cursor. Suspension should also be callable from a case.
-- **Phase 12/13:** route suspension through the durable safety-operation protocol: revoke Firestore `chatAccess`, close rooms, revoke or disable Firebase Auth sessions, and handle "suspension racing send/accept" once matches and chat exist. The account guard bump is already in place for those CAS checks.
+- **Phase 12/13:** route suspension through the durable safety-operation protocol: revoke Firestore `chatAccess`, close rooms, retry failed session revocation (today it is attempted once after commit), decide whether to also disable the Firebase user, and handle "suspension racing send/accept" once matches and chat exist. The account guard bump is already in place for those CAS checks.
 - **Phase 13:** synthetic staff fixtures in the seed script. Today `admin-claims.ts --create` does this on demand. Also an optional `If-Match`-style `expectedGuardVersion` on account actions.
 - **Phase 15:** deletion must erase or anonymize `adminAuditLog` references according to P-06, keeping only what the retention policy allows.
 - **Rate limiting** on staff routes, and an alert on unusual decision volume.

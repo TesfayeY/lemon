@@ -16,7 +16,7 @@ import { createMediaRoutes } from '../src/modules/media/routes.js';
 import { createAdminRoutes } from '../src/modules/admin/routes.js';
 import { ADMIN_AUDIT_COLLECTION, ensureAdminIndexes, type AdminAuditEntry } from '../src/modules/admin/audit.js';
 import { InMemoryMediaStorage } from '../src/adapters/media/in-memory.js';
-import { createEmptyProfile, type PromptAnswerDocument } from '../src/modules/profiles/schema.js';
+import { createEmptyProfile, type ProfileDocument, type PromptAnswerDocument } from '../src/modules/profiles/schema.js';
 import { createDefaultPreferences } from '../src/modules/preferences/schema.js';
 import { photoObjectKeys, type PhotoDocument, type PhotoStateType } from '../src/modules/media/schema.js';
 import type { AccountStatusType, UserDocument } from '../src/modules/auth/account.js';
@@ -84,7 +84,10 @@ const auth = {
     }
     throw Object.assign(new Error('invalid'), { code: 'auth/argument-error' });
   }),
+  // Suspension ends the member's Firebase sessions after commit
+  revokeRefreshTokens: vi.fn(async (_uid: string) => undefined),
 } as unknown as Auth;
+const revokeRefreshTokens = vi.mocked(auth.revokeRefreshTokens);
 
 const bearer = (name: string) => `Bearer token-${name}`;
 
@@ -112,6 +115,8 @@ beforeEach(async () => {
     await db.collection(name).deleteMany({});
   }
   storage = new InMemoryMediaStorage();
+  revokeRefreshTokens.mockReset();
+  revokeRefreshTokens.mockResolvedValue(undefined);
   app = createApp({
     mongoCheck: async () => true,
     firebaseCheck: async () => true,
@@ -807,6 +812,7 @@ describe('concurrent decisions', () => {
     expect(results.filter((r) => r.status === 200)).toHaveLength(1);
     expect(results.filter((r) => r.status === 409).every((r) => r.body.error.code === 'ACCOUNT_STATE_CONFLICT')).toBe(true);
     expect(await audits().countDocuments({ targetId: m.userId })).toBe(1);
+    expect(revokeRefreshTokens).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -839,6 +845,7 @@ describe('audit atomicity', () => {
     expect((await getAnswer(m.answerIds[3]!))!).toMatchObject({ state: 'pending', approvedText: null, publishedRevision: 0 });
     expect((await getUser('alice'))!).toMatchObject({ accountStatus: 'active', guardVersion: 1, profileReady: true });
     expect(await audits().countDocuments()).toBe(0);
+    expect(revokeRefreshTokens).not.toHaveBeenCalled();
     const set = await db.collection('photoSets').findOne({ _id: m.userId });
     expect(set!['revision']).toBe(1);
 
@@ -880,6 +887,7 @@ describe('audit atomicity', () => {
     expect((await getAnswer(m.answerIds[3]!))!).toMatchObject({ state: 'pending', publishedRevision: 0 });
     expect((await getAnswer(m.answerIds[3]!))!.rejectionReason ?? null).toBeNull();
     expect((await getUser('alice'))!).toMatchObject({ accountStatus: 'active', guardVersion: 1 });
+    expect(revokeRefreshTokens).not.toHaveBeenCalled();
   });
 
   it('server logs never contain tokens, answer text or account details', async () => {
@@ -921,6 +929,10 @@ describe('account suspension and restore', () => {
     expect(suspended.profileReady).toBe(false);
     expect(suspended.guardVersion).toBeGreaterThan(before.guardVersion);
 
+    // Existing sessions end: refresh tokens are revoked once the suspension has committed
+    expect(revokeRefreshTokens).toHaveBeenCalledTimes(1);
+    expect(revokeRefreshTokens).toHaveBeenCalledWith('uid-alice');
+
     // New actions stop: the account, its profile and its photos
     expect((await request(app).get('/v1/me').set('Authorization', bearer('alice'))).status).toBe(403);
     expect((await request(app).get(`/v1/profiles/${m.userId}`).set('Authorization', bearer('bob'))).status).toBe(404);
@@ -948,6 +960,8 @@ describe('account suspension and restore', () => {
     expectContract(restore, '/v1/admin/users/{id}/restore', 'post');
     expect(restore.body.data.account).toMatchObject({ accountStatus: 'active', profileReady: true, suspension: null });
     expect((await request(app).get(`/v1/profiles/${m.userId}`).set('Authorization', bearer('bob'))).status).toBe(200);
+    // Restoring revokes nothing
+    expect(revokeRefreshTokens).toHaveBeenCalledTimes(1);
 
     const restoreAgain = await request(app).post(`/v1/admin/users/${m.userId}/restore`).set('Authorization', bearer('admin')).send({ reason: 'appeal_upheld' });
     expect(restoreAgain.status).toBe(409);
@@ -956,6 +970,61 @@ describe('account suspension and restore', () => {
     expect(history.status).toBe(200);
     expectContract(history, '/v1/admin/audit-log', 'get');
     expect(history.body.data.map((e: { action: string }) => e.action)).toEqual(['account.suspend', 'account.restore']);
+  });
+
+  it('refuses own-account edits from a session that is still signed in after suspension', async () => {
+    const m = await seedVisibleMember('alice');
+    expect((await request(app).post(`/v1/admin/users/${m.userId}/suspend`).set('Authorization', bearer('admin'))
+      .send({ reason: 'harassment' })).status).toBe(200);
+
+    // The mock still verifies token-alice: a session whose revocation hasn't reached this token yet
+    const as = (req: request.Test) => req.set('Authorization', bearer('alice'));
+    const attempts = [
+      as(request(app).get('/v1/me/profile')),
+      as(request(app).patch('/v1/me/profile')).send({ expectedRevision: 1, displayName: 'Changed' }),
+      as(request(app).get('/v1/me/profile/preview')),
+      as(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-cooking', text: 'New answer' }),
+      as(request(app).patch(`/v1/me/prompts/${m.answerIds[0]}`)).send({ expectedRevision: 1, text: 'Edited' }),
+      as(request(app).delete(`/v1/me/prompts/${m.answerIds[1]}`)),
+    ];
+    for (const res of await Promise.all(attempts)) {
+      expect(res.status, `${res.req.method} ${res.req.path}`).toBe(403);
+      expect(res.body.error).toMatchObject({ code: 'ACCOUNT_RESTRICTED', retryable: false });
+    }
+
+    const profile = await db.collection<ProfileDocument>('profiles').findOne({ userId: m.userId });
+    expect(profile).toMatchObject({ displayName: 'alice', revision: 1 });
+    const answers = await db.collection<PromptAnswerDocument>('promptAnswers').find({ ownerId: m.userId }).toArray();
+    expect(answers).toHaveLength(3);
+    expect(answers.every((a) => a.revision === 1 && a.pendingText === null)).toBe(true);
+    expect((await getUser('alice'))!).toMatchObject({ accountStatus: 'suspended', profileReady: false });
+  });
+
+  it('keeps the suspension when session revocation fails, and logs no personal data', async () => {
+    const m = await seedVisibleMember('alice');
+    revokeRefreshTokens.mockRejectedValueOnce(
+      Object.assign(new Error('There is no user record corresponding to uid-alice'), { code: 'auth/internal-error' }));
+    const lines: string[] = [];
+    const errors = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    let res;
+    try {
+      res = await request(app).post(`/v1/admin/users/${m.userId}/suspend`).set('Authorization', bearer('admin'))
+        .set('X-Request-Id', 'req-revoke-fails').send({ reason: 'harassment' });
+    } finally {
+      errors.mockRestore();
+    }
+
+    expect(res.status).toBe(200);
+    expectContract(res, '/v1/admin/users/{id}/suspend', 'post');
+    expect(res.body.data.account).toMatchObject({ accountStatus: 'suspended', profileReady: false });
+    expect((await getUser('alice'))!.accountStatus).toBe('suspended');
+    expect(await audits().countDocuments({ targetId: m.userId, action: 'account.suspend' })).toBe(1);
+    expect((await request(app).get('/v1/me/profile').set('Authorization', bearer('alice'))).status).toBe(403);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('req-revoke-fails');
+    expect(lines[0]).toContain('auth/internal-error');
+    for (const secret of ['uid-alice', m.userId, 'There is no user record']) expect(lines[0]).not.toContain(secret);
   });
 
   it('restores an account suspended during onboarding to onboarding', async () => {

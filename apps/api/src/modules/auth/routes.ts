@@ -4,6 +4,7 @@ import type { Auth } from 'firebase-admin/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { createAuthMiddleware, type AuthenticatedRequest } from './middleware.js';
 import { createNewUser, canAuthenticate, type UserDocument } from './account.js';
+import { loadOwnAccount } from './load-account.js';
 import { parseBirthDate, isAdultEligible } from './adult-gate.js';
 import { evaluateReadiness, recomputeReadiness } from '../profiles/readiness-service.js';
 
@@ -94,29 +95,9 @@ export function createAuthRoutes(db: Db, auth: Auth) {
    * Private own-account snapshot including readiness and next onboarding step.
    */
   router.get('/v1/me', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-
-    // Not bootstrapped yet: same answer as every other own-resource route
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
-
-    if (!canAuthenticate(user.accountStatus)) {
-      res.status(403).json({
-        error: {
-          code: 'ACCOUNT_RESTRICTED',
-          message: 'This account is not available',
-          retryable: false,
-        },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    // Not bootstrapped yet (404) or restricted (403): same answers as every other own-resource route
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     res.json({
       data: {
@@ -141,16 +122,8 @@ export function createAuthRoutes(db: Db, auth: Auth) {
    * Currently supports: birthDate
    */
   router.patch('/v1/me/onboarding', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     if (user.accountStatus !== 'onboarding') {
       res.status(409).json({
