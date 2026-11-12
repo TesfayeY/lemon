@@ -8,16 +8,15 @@
  *    Failed photos are then removed; deleted photos keep a tombstone.
  *
  * Every step is idempotent, so a crash or storage outage only delays cleanup to
- * the next run. Run directly with `tsx src/workers/media-cleanup.ts [--once]`.
- *
- * TODO: start this from the shared worker entry point (D-06) once it exists.
+ * the next run. The worker entry point (src/worker.ts) runs it every minute:
+ * `npm run worker`, or `npm run worker -- --once` for a single pass.
  */
 
-import { fileURLToPath } from 'node:url';
 import type { Db } from 'mongodb';
 import type { MediaStorage } from '../adapters/media/storage.js';
 import { bumpPhotoSetRevision, purgePhotoObjects } from '../modules/media/photo-set.js';
 import { PhotoState, type PhotoDocument } from '../modules/media/schema.js';
+import type { WorkerJob } from './runner.js';
 
 export interface MediaCleanupOptions {
   now?: Date;
@@ -73,39 +72,22 @@ export async function runMediaCleanup(
   return result;
 }
 
-async function main() {
-  const { loadConfig } = await import('../config.js');
-  const { connectDb, closeDb } = await import('../db.js');
-  const { LocalMediaStorage } = await import('../adapters/media/local.js');
+const CLEANUP_INTERVAL_MS = 60_000;
 
-  const config = loadConfig();
-  const { db } = await connectDb(config);
-  const storage = new LocalMediaStorage(config.MEDIA_LOCAL_DIR);
-  const once = process.argv.includes('--once');
-  const intervalMs = 60_000;
-
-  const tick = async () => {
-    const result = await runMediaCleanup(db, storage);
-    console.log(`Media cleanup: ${JSON.stringify(result)}`);
+/** The cleanup as a worker job. Logs counts only, and only when a run changed something. */
+export function createMediaCleanupJob(
+  db: Db,
+  storage: MediaStorage,
+  options: Omit<MediaCleanupOptions, 'now'> = {},
+): WorkerJob {
+  return {
+    name: 'media-cleanup',
+    intervalMs: CLEANUP_INTERVAL_MS,
+    run: async () => {
+      const result = await runMediaCleanup(db, storage, options);
+      if (result.expired || result.purged || result.retryLater) {
+        console.log(`Media cleanup: ${JSON.stringify(result)}`);
+      }
+    },
   };
-
-  await tick();
-  if (once) {
-    await closeDb();
-    return;
-  }
-  const timer = setInterval(() => {
-    tick().catch((err: Error) => console.error(`Media cleanup run failed: ${err.message}`));
-  }, intervalMs);
-  process.on('SIGINT', () => {
-    clearInterval(timer);
-    closeDb().finally(() => process.exit(0));
-  });
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((err: Error) => {
-    console.error('Media cleanup worker failed:', err.message);
-    process.exit(1);
-  });
 }
