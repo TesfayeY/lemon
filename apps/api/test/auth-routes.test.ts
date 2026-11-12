@@ -46,13 +46,14 @@ function createMockCollection() {
       for (const [id, doc] of store.entries()) {
         const match = Object.entries(filter).every(([k, v]) => doc[k] === v);
         if (match) {
-          const setFields = (update as { $set?: Record<string, unknown> }).$set ?? {};
-          Object.assign(doc, setFields);
+          const { $set = {}, $inc = {} } = update as { $set?: Record<string, unknown>; $inc?: Record<string, number> };
+          Object.assign(doc, $set);
+          for (const [k, by] of Object.entries($inc)) doc[k] = ((doc[k] as number) ?? 0) + by;
           store.set(id, doc);
-          return { modifiedCount: 1 };
+          return { matchedCount: 1, modifiedCount: 1 };
         }
       }
-      return { modifiedCount: 0 };
+      return { matchedCount: 0, modifiedCount: 0 };
     }),
     // Readiness counts published prompt answers; none exist in these tests
     countDocuments: vi.fn(async () => 0),
