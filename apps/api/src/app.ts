@@ -1,6 +1,7 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import type { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import { describeError } from './logging.js';
 
 export interface AppDependencies {
   mongoCheck: () => Promise<boolean>;
@@ -117,11 +118,12 @@ export function createApp(deps: AppDependencies) {
     });
   });
 
-  // Error handler — never expose stack traces or internal details
+  // Error handler. Never exposes stack traces or internal details, and never logs
+  // error messages (they can contain stored values; see describeError).
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (res.headersSent) {
       // Too late for an error body (e.g. a stream failed mid-response): drop the connection
-      console.error(`[${req.requestId}] Error after response started: ${(err as Error).message}`);
+      console.error(`[${req.requestId}] Error after response started: ${describeError(err)}`);
       req.socket.destroy();
       return;
     }
@@ -135,7 +137,9 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    console.error(`[${req.requestId}] Unhandled error: ${(err as Error).message}`);
+    const route = (req.route as { path?: unknown } | undefined)?.path;
+    const where = typeof route === 'string' ? `${req.method} ${route}` : req.method;
+    console.error(`[${req.requestId}] Unhandled error in ${where}: ${describeError(err)}`);
     res.status(500).json({
       error: {
         code: 'INTERNAL_ERROR',

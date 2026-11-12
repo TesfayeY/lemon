@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 import multer from 'multer';
+import { MongoServerError } from 'mongodb';
 import { createApp } from '../src/app.js';
 import { buildApp } from './support.js';
 
@@ -156,6 +157,26 @@ describe('Unhandled errors', () => {
       error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred', retryable: true },
       requestId: expect.stringMatching(UUID),
     });
+  });
+
+  it('log the error name, code and request ID but never the message', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const duplicate = () => new MongoServerError({
+      errmsg: 'E11000 duplicate key error collection: lemon.users index: firebaseUid_1 dup key: { firebaseUid: "uid-PRIVATE-123" }',
+      code: 11000,
+      codeName: 'DuplicateKey',
+      keyValue: { firebaseUid: 'uid-PRIVATE-123' },
+    });
+
+    await request(makeApp(duplicate)).post('/v1/fail').set('x-request-id', 'trace-1').send({});
+
+    expect(log).toHaveBeenCalledTimes(1);
+    const line = log.mock.calls[0]!.join(' ');
+    expect(line).toContain('[trace-1]');
+    expect(line).toContain('POST /v1/fail');
+    expect(line).toContain('MongoServerError code=11000 codeName=DuplicateKey');
+    expect(line).not.toContain('uid-PRIVATE-123');
+    expect(line).not.toContain('duplicate key');
   });
 });
 

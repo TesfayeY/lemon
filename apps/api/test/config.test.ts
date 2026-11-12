@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { ConfigError, loadConfig } from '../src/config.js';
 
 describe('loadConfig', () => {
   const originalEnv = { ...process.env };
@@ -44,6 +44,22 @@ describe('loadConfig', () => {
   it('rejects invalid NODE_ENV', () => {
     process.env['NODE_ENV'] = 'staging';
     expect(() => loadConfig()).toThrow('Invalid environment configuration');
+  });
+
+  it('throws a loggable ConfigError that names variables but never their values', () => {
+    process.env['DISCOVERY_CURSOR_SECRET'] = 'too-short-PRIVATE';
+    process.env['PORT'] = 'port-PRIVATE';
+    let thrown: unknown;
+    try {
+      loadConfig();
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    const message = (thrown as Error).message;
+    expect(message).toContain('DISCOVERY_CURSOR_SECRET');
+    expect(message).toContain('PORT');
+    expect(message).not.toContain('PRIVATE');
   });
 
   it('coerces PORT to number', () => {
