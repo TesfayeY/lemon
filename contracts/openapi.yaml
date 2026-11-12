@@ -11,7 +11,9 @@ info:
     fails the contract test in `apps/api/test/contract.test.ts`.
 
     Successful responses are wrapped as `{ data, meta }`; failures as
-    `{ error, requestId }`.
+    `{ error, requestId }`. Every response carries a request ID: the client's
+    `X-Request-Id` header when it matches `^[A-Za-z0-9._:-]{1,128}$`,
+    otherwise one the server generates.
 servers:
   - url: http://localhost:3000
 security:
@@ -957,6 +959,12 @@ components:
         - Any route: 401 `UNAUTHENTICATED`, `TOKEN_REVOKED`; 500 `INTERNAL_ERROR`;
           404 `NOT_FOUND` (no app account yet: call `POST /v1/me/bootstrap`; also
           a missing own resource or unknown route).
+        - Any request body: 400 `INVALID_JSON` (the body is not valid JSON);
+          413 `PAYLOAD_TOO_LARGE` (a JSON body over 1 MB); 415
+          `UNSUPPORTED_MEDIA_TYPE` (an unsupported body charset or encoding);
+          400 `BAD_REQUEST` (any other malformed request, such as a path
+          parameter that is not valid percent-encoding). None are retryable:
+          fix the request instead. A missing body is treated as `{}`.
         - Accounts: 403 `ACCOUNT_RESTRICTED` (suspended or being deleted),
           `ACCOUNT_NOT_ELIGIBLE` (not active and profile-ready); 422
           `AGE_INELIGIBLE` (under 18); 409 `INVALID_STATE` (onboarding step
@@ -986,6 +994,8 @@ components:
         - UNAUTHENTICATED
         - TOKEN_REVOKED
         - INTERNAL_ERROR
+        - INVALID_JSON
+        - BAD_REQUEST
         - NOT_FOUND
         - ACCOUNT_RESTRICTED
         - ACCOUNT_NOT_ELIGIBLE

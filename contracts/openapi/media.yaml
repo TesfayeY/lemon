@@ -413,6 +413,8 @@ components:
               enum:
                 - UNAUTHENTICATED
                 - TOKEN_REVOKED
+                - INVALID_JSON
+                - BAD_REQUEST
                 - NOT_FOUND
                 - ACCOUNT_RESTRICTED
                 - ACCOUNT_NOT_ELIGIBLE
