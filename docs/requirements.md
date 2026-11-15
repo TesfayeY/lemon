@@ -97,7 +97,7 @@
 |----|------------|-------|------------|
 | R-ADMIN-01 | Server-managed staff roles; no client role assignment | 13 | API integration |
 | R-ADMIN-02 | Report queue, case revision checks | 13 | API integration |
-| R-ADMIN-03 | Photo/prompt review workflow | 13 | Integration |
+| R-ADMIN-03 | Photo review workflow (prompt answers publish immediately, D-13) | 13 | Integration |
 | R-ADMIN-04 | Append-only audit log | 13 | Integration |
 | R-ADMIN-05 | No sensitive data in logs | 13 | Code review |
 

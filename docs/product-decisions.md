@@ -1,6 +1,6 @@
 # Product Decisions
 
-Last updated: 2026-11-10
+Last updated: 2026-11-12
 
 ## Confirmed Decisions
 
@@ -18,6 +18,7 @@ Last updated: 2026-11-10
 | D-10 | Declined likers in Discover | A person whose like you declined never returns to your Discover. Pending likers are hidden too; they appear in Likes instead | 2026-11-10 |
 | D-11 | Sent likes | No "sent likes" list. After you like someone, their profile is unavailable to you until you match (Phase 09). This matches the major dating apps and keeps who-liked-whom private until it's mutual | 2026-11-10 |
 | D-12 | Photo access | Another member's photos load only while their profile is viewable to you (`canViewProfile`, the same check as `GET /v1/profiles/:id`), rechecked on every request | 2026-11-10 |
+| D-13 | Prompt answer moderation | Prompt answers publish as soon as they are saved, with no pre-approval; there is no prompt review queue. Text moderation will come later from a member report option. Photos are still reviewed by a person before they are shown | 2026-11-12 |
 
 ## Pending Decisions (Owner Input Needed)
 
@@ -30,7 +31,7 @@ Last updated: 2026-11-10
 | P-05 | Push notifications | Firebase Cloud Messaging proposed | 14 | Approve FCM? |
 | P-06 | Retention/deletion policy | Remove user data; retain only report evidence under bounded policy | 15 | Exact retention periods and scope? |
 | P-07 | Launch metro areas | Configurable US city catalog; no specific metros chosen | 07 | Which cities/metros for pilot? |
-| P-08 | Moderation staffing | Manual photo/text review for pilot | 13 | Who reviews content at launch? |
+| P-08 | Moderation staffing | Manual photo review for pilot (prompt text is not pre-reviewed, D-13) | 13 | Who reviews content at launch? |
 | P-09 | Eligibility wording | Community self-identification; no proof required | 03 | Exact onboarding copy for community connection? |
 | P-10 | Like allowance | 8 new likes per UTC day | 08 | Acceptable pilot limit? |
 

@@ -5,27 +5,25 @@
 **Spec:** `docs/specification.md` §4.3, §4.7, §4.9, §6–7 and the Phase 13 prompt
 **Requirements:** R-ADMIN-01, R-ADMIN-03, R-ADMIN-04, R-ADMIN-05 (R-ADMIN-02, the report queue, waits for Phase 12)
 
+> **Update 2026-11-12 (D-13):** prompt answers no longer go through review. They publish as soon as the owner saves them, and text moderation will come later from a member report option. The prompt-answer queue, detail and review endpoints, `profiles/prompt-review.ts`, the prompt rejection catalog and the `admin-review.ts` prompt commands were removed (branch `feat/prompts-publish-immediately`). Photo review, account actions and the audit log are unchanged. This brief now describes photos only; audit entries with `prompt_answer.approve`/`prompt_answer.reject` written before D-13 stay readable through `GET /v1/admin/audit-log?targetType=promptAnswer`.
+
 ## Done
 
 - **Staff identity.** A staff member is identified only by the `staffRole` custom claim (`moderator` or `admin`) in a Firebase ID token. The Admin SDK verifies the token on every `/v1/admin` route, including the revocation and disabled-account checks. Only an exact known role string counts; `admin: true`, `role`, `roles`, `'Admin'` and arrays are all ignored. Request bodies, headers and query strings are never read for identity or role, and there is no email allowlist. Staff tokens must also have a verified email.
 - **Separate permissions (spec §4.9).** Moderators get `content.review`. Admins also get `account.manage` and `audit.read`.
 - **Recent sign-in** is required for suspend and restore. `auth_time` must be within `ADMIN_RECENT_AUTH_MAX_AGE_SECONDS` (default 900).
-- **Review queues.** Pending photos are listed oldest upload first. Pending prompt answers are listed oldest submission first, and an owner edit moves the answer to the back. Both use keyset pagination on `(submittedAt, id)`, so deciding an item already listed doesn't shift later pages.
+- **Review queue.** Pending photos are listed oldest upload first, with keyset pagination on `(submittedAt, id)`, so deciding an item already listed doesn't shift later pages. Prompt answers have no queue (D-13).
 - **Item detail** gives only what a reviewer needs: the item, the owner's app user ID, display name and account status, and for photos, the owner's other current photos. It never includes DOB, email or Firebase UID.
 - **Quarantine media.** Pending photos are streamed through a staff-only route with `Cache-Control: private, no-store`. Only the metadata-free `thumb`/`display` variants are served, never the private master. Deleted, failed and processing photos return 404.
 - **Decisions.** Each decision is one Mongo transaction. It compare-and-sets the target on the state/version the reviewer acted on and appends one `adminAuditLog` entry. When reviewers race, one wins and the others get `409 REVIEW_CONFLICT` and write nothing. If the transaction aborts for any reason, including after the audit insert, neither the decision nor the entry survives. Readiness and photo-set follow-ups run after commit through `recomputeReadiness` and `finishPhotoDecision`.
   - **Photos** reuse `media/review-service.ts`. It is now split into `applyPhotoDecision` (session-aware CAS) and `finishPhotoDecision`. `reviewPhoto` keeps its old behavior for the dev script.
-  - **Prompt answers** use the new `profiles/prompt-review.ts`, a CAS on `state: 'pending'` plus the `expectedRevision` the reviewer saw.
-    - Approve publishes `pendingText` and increments `publishedRevision`.
-    - Reject keeps any previously approved text live and stores a catalog `rejectionReason`.
-    - If the owner edits during review, the decision gets 409 with `currentRevision`, so text the reviewer never saw is never published.
-- **Owner prompt DTO** (`GET /v1/me/profile`): `rejectionReason: { code, messageKey, message, action: 'replace' }` appears only while the answer is rejected. Replacing the text resubmits it and hides the old reason. The public DTO is unchanged and never carries it.
+  - **Prompt answers** were reviewed through `profiles/prompt-review.ts` until D-13. That file is gone; the owner's view of an answer is now `{ id, promptId, promptText, text, revision, contentVersion }` with no review state or `rejectionReason`.
 - **Suspend and restore** (spec Phase 13 lists them):
   - Each runs in one transaction: a CAS on account status plus `guardVersion`, a `guardVersion` increment, and the audit entry.
   - Suspension stops new actions immediately: `/v1/me` returns 403, the profile is unavailable and photos aren't served. Readiness is recomputed and cleared.
   - Restore returns the account to its previous status (`active` or `onboarding`) and recomputes readiness. It reopens nothing else.
   - Staff can't act on their own account or content (`SELF_ACTION_FORBIDDEN`).
-- **Audit log** (`adminAuditLog`, append-only by service contract: the module exposes append and per-target reads only). Each entry records actor UID and role, action, target type/id/owner, catalog reason, optional internal note, before/after state, request ID and timestamp. Entries never carry tokens, emails, DOB or answer text; prompt decisions store a SHA-256 of the decided text instead. IDs are UUIDv7, so entries with the same timestamp still list in insertion order.
+- **Audit log** (`adminAuditLog`, append-only by service contract: the module exposes append and per-target reads only). Each entry records actor UID and role, action, target type/id/owner, catalog reason, optional internal note, before/after state, request ID and timestamp. Entries never carry tokens, emails, DOB or answer text; legacy prompt decisions (before D-13) stored a SHA-256 of the decided text instead. IDs are UUIDv7, so entries with the same timestamp still list in insertion order.
 
 ### Endpoints
 
@@ -37,13 +35,10 @@
 | `GET /v1/admin/content/photos/:id` | moderator | Review detail |
 | `GET /v1/admin/content/photos/:id/media/:variant` | moderator | `thumb` or `display`, any reviewable state |
 | `POST /v1/admin/content/photos/:id/review` | moderator | `{ decision, reason?, note? }` |
-| `GET /v1/admin/content/prompt-answers?cursor&limit` | moderator | Pending queue |
-| `GET /v1/admin/content/prompt-answers/:id` | moderator | Published and pending text |
-| `POST /v1/admin/content/prompt-answers/:id/review` | moderator | `{ decision, expectedRevision, reason?, note? }` |
 | `GET /v1/admin/users/:id` | admin | Account summary |
 | `POST /v1/admin/users/:id/suspend` | admin + recent sign-in | `{ reason, note? }` |
 | `POST /v1/admin/users/:id/restore` | admin + recent sign-in | `{ reason, note? }` |
-| `GET /v1/admin/audit-log?targetType&targetId` | admin | One target's history; no bulk export |
+| `GET /v1/admin/audit-log?targetType&targetId` | admin | One target's history; no bulk export. `targetType=promptAnswer` returns only pre-D-13 entries |
 
 All are in `contracts/openapi.yaml`, and the tests validate live responses against it. Request bodies are strict: unknown fields get 422.
 
@@ -58,11 +53,10 @@ Once PR #16's `ErrorCode` enum is on `main`, the new codes must be added to it.
 | Catalog | Codes | Shown to |
 |---------|-------|----------|
 | Photo rejection (existing, `media/review-service.ts`) | `face_not_clear`, `multiple_people`, `low_quality`, `contact_details`, `community_guidelines` | Owner |
-| Prompt rejection (`profiles/prompt-review.ts`) | `contact_details`, `sexual_content`, `hateful_or_harassing`, `promotional`, `community_guidelines`; localization keys `promptRejection.*` | Owner |
 | Account suspension | `harassment`, `scam_or_spam`, `impersonation`, `underage_concern`, `hateful_conduct`, `community_guidelines` | Staff only |
 | Account restore | `appeal_upheld`, `decision_error`, `concern_resolved` | Staff only |
 
-The copy is proposed. It needs owner review, and native review if Amharic is added later. Mobile needs `promptRejection.*` localization keys; until then it can fall back to `message`.
+The copy is proposed. It needs owner review, and native review if Amharic is added later. The prompt rejection catalog was removed with prompt review (D-13).
 
 ## Granting a staff claim locally
 
@@ -87,11 +81,11 @@ export LEMON_STAFF_EMAIL=mod@lemon.test LEMON_STAFF_PASSWORD='…' FIREBASE_AUTH
 npx tsx ../../scripts/admin-review.ts photos
 npx tsx ../../scripts/admin-review.ts photo <id> --save /tmp/photo.webp
 npx tsx ../../scripts/admin-review.ts reject-photo <id> --reason low_quality
-npx tsx ../../scripts/admin-review.ts prompts
-npx tsx ../../scripts/admin-review.ts approve-prompt <id> --revision <n>
 ```
 
 ## Verification
+
+As run on `feat/admin-moderation`, before D-13 removed prompt review. The prompt-answer tests listed here were replaced by checks that the prompt-answer routes answer 404 and that legacy `prompt_answer.*` audit entries still read and validate against the contract.
 
 - `scripts/check-api.sh` passes: typecheck, lint, 400 tests (354 existing + 46 new).
 - `test/admin.test.ts` has 40 tests against the real local replica set in an isolated `lemon_test_admin_<pid>_<ts>` database, dropped afterwards. It covers:
@@ -117,11 +111,11 @@ npx tsx ../../scripts/admin-review.ts approve-prompt <id> --revision <n>
 - **Audit collection `adminAuditLog`** holds only verified staff actions. The dev-only `scripts/review-photos.ts` still writes its old `auditLog` entries with a free-form actor. I suggest retiring that script in favor of `admin-review.ts` so there's a single trail.
 - **Recent sign-in** is required for account actions only, not content review. "Evidence access" belongs to the Phase 12 report evidence.
 - **Readiness follow-ups run after commit.** `recomputeReadiness` and the photo-set bump take no session, so a crash between commit and follow-up leaves readiness stale until the next recompute, which is idempotent.
-- **Approving a prompt doesn't bump the owner's edit `revision`**, only `publishedRevision`.
+- ~~Approving a prompt doesn't bump the owner's edit `revision`~~ (moot since D-13: an owner edit bumps both `revision` and, when the words change, `publishedRevision`).
 
 ## Open questions
 
-- **P-08 (moderation staffing):** who reviews at launch, in which languages, and with what response times. Nothing here invents staffing.
+- **P-08 (moderation staffing):** who reviews photos at launch, in which languages, and with what response times. Nothing here invents staffing.
 - **Admin UI:** the spec suggests an internal Flutter admin route or build, but D-03 rules out a public web client and this phase builds no mobile admin UI. For now: the API plus `scripts/admin-review.ts`. Owner to choose a separate internal Flutter build, an internal web tool, or the CLI for the pilot.
 - **Suspension copy:** what a suspended member sees. Today `/v1/me` returns `ACCOUNT_RESTRICTED` (403).
 
@@ -132,4 +126,5 @@ npx tsx ../../scripts/admin-review.ts approve-prompt <id> --revision <n>
 - **Phase 13:** synthetic staff fixtures in the seed script. Today `admin-claims.ts --create` does this on demand. Also an optional `If-Match`-style `expectedGuardVersion` on account actions.
 - **Phase 15:** deletion must erase or anonymize `adminAuditLog` references according to P-06, keeping only what the retention policy allows.
 - **Rate limiting** on staff routes, and an alert on unusual decision volume.
-- **Mobile:** `promptRejection.*` localization keys and the "replace answer" flow. The DTO already carries `action: 'replace'`.
+- ~~**Mobile:** `promptRejection.*` localization keys and the "replace answer" flow~~ (dropped with prompt review, D-13).
+- **Member reports (Phase 12):** the report option is now the only moderation path for prompt answer text (D-13).

@@ -183,7 +183,7 @@ Save each completed step server-side with a revision number. Resume from missing
 | Height | Optional | Visibility selectable | Units convertible; do not block profile activation |
 | Terms/privacy acceptance | Yes | No | Document version, timestamp, locale; no fabricated final legal text |
 
-Readiness is a server-computed predicate: verified account, adult eligibility, current agreements accepted, all required fields valid, at least three approved photos, three approved prompt answers, and no safety restriction. Update profile readiness immediately when edits remove required content. Maintain an approved published profile and a pending draft where practical so an edited prompt does not overwrite already approved content before review. Never publish a pending replacement automatically.
+Readiness is a server-computed predicate: verified account, adult eligibility, current agreements accepted, all required fields valid, at least three approved photos, three approved prompt answers, and no safety restriction. Update profile readiness immediately when edits remove required content. Maintain an approved published profile and a pending draft where practical so an edited prompt does not overwrite already approved content before review. Never publish a pending replacement automatically. (Superseded for prompt answers by D-13 in `docs/product-decisions.md`: answers publish as soon as they are saved and readiness counts three saved answers. Photos keep this rule.)
 
 Every public API uses an explicit allowlisted profile DTO. Exclude birth date, email, Firebase UID, report history, internal moderation fields, raw coordinates, device tokens, private preferences and hidden optional fields.
 
@@ -195,7 +195,7 @@ Proposed limit: 10 MB per uploaded photo, configurable. Flutter compresses/resiz
 
 Upload through an authenticated Express multipart endpoint with strict request limits into quarantine. Generate a server-owned asset ID and object path. Strip EXIF, including GPS, normalize orientation and produce approved thumbnail/display variants. Prevent clients from reading quarantine or writing arbitrary storage paths. A moderation decision promotes safe variants; failed processing removes orphan assets through a retryable cleanup job. Guard against requests to fetch arbitrary external URLs.
 
-For the first small pilot, manual photo and text review is an acceptable proposed workflow if someone is assigned to do it. Pending photos/prompts do not appear in discovery. Rejection gives a respectful reason and replacement action. Automated moderation is a later adapter, not an invented built-in capability. Admin actions record actor, target, reason, before/after state and timestamp.
+For the first small pilot, manual photo and text review is an acceptable proposed workflow if someone is assigned to do it. Pending photos/prompts do not appear in discovery. (D-13: prompt answers are not pre-reviewed; they publish on save, and text moderation will come from a member report option later. Photo review is unchanged.) Rejection gives a respectful reason and replacement action. Automated moderation is a later adapter, not an invented built-in capability. Admin actions record actor, target, reason, before/after state and timestamp.
 
 Private buckets are not sufficient if permanent bearer download URLs are exposed. Prefer an authenticated media endpoint that rechecks access and streams a variant. If short-lived signed URLs are chosen later, explicitly document their revocation delay. Do not ship public permanent URLs for dating profiles.
 
@@ -355,7 +355,7 @@ Use server-generated opaque user IDs and UTC timestamps. Do not expose Firebase 
 | `preferences` | userId, acceptedGenderCategories, minAge, maxAge, locationScope, longDistance, optional soft preferences, revision | Unique userId; revision invalidates sessions |
 | `photos` | id, ownerId, state, originalPrivateKey, variantKeys, dimensions, order, revision, moderationReason | ownerId/state/order; server-managed object paths |
 | `promptCatalog` | id, category, localizedText keys, active, revision | Unique stable id; inactive prompts follow explicit migration policy |
-| `promptAnswers` | id, ownerId, promptId, approvedText, pendingText, state, publishedRevision | ownerId/promptId uniqueness; text not silently republished |
+| `promptAnswers` | id, ownerId, promptId, slot, approvedText (the published text), revision, publishedRevision | ownerId/promptId and ownerId/slot uniqueness; every text change bumps publishedRevision (D-13: no pendingText/state) |
 | `pairs` | pairKey, sorted memberIds, state, version, nextMessageSequence, matchId, closedReason | Unique pairKey; all competing pair writes touch this document |
 | `likes` | id, fromUserId, toUserId, pairKey, targetKind/id/version, context, comment, status, createdAt | Unique from/to for v1; recipient/status/createdAt/id pagination |
 | `passes` | viewerId, candidateId, expiresAt | Unique viewer/candidate; expiry index. Check expiresAt in code because TTL deletion is asynchronous |
@@ -471,7 +471,7 @@ The agent must write meaningful tests for each implemented behavior, run them, a
 4. Changing profile owner IDs in requests does not expose or edit another profile.
 5. Every public profile DTO excludes private fields and hidden optional fields.
 6. Corrupt, oversized, wrong-format and EXIF-bearing photos are handled correctly; quarantine cannot be read.
-7. A pending/rejected photo or prompt cannot appear in discovery or be liked.
+7. A pending/rejected photo cannot appear in discovery or be liked. (Prompt answers publish on save, D-13; a like pins the answer's published version.)
 8. Mutual age/interests/location rules apply in both directions and are checked again at action time.
 9. Pagination has stable order, no duplicates within a session, owned/expiring cursor checks, correct scanned offsets, and preference invalidation.
 10. Same like retry consumes one quota unit; failure consumes zero; parallel requests cannot exceed allowance.

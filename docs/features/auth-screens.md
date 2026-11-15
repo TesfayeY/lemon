@@ -192,8 +192,8 @@ iOS 15 and macOS 11+.
 ## Follow-ups
 
 - On-device run against the real Auth emulator + Express API (seeded account,
-  verification via `oobCodes`). This depends on the same seeded-account and
-  prompt-review tooling as the onboarding follow-up.
+  verification via `oobCodes`). This depends on the same seeded-account
+  tooling as the onboarding follow-up (prompt review is gone, D-13).
 - Native platform setup for release builds: iOS/macOS keychain sharing
   entitlement if Firebase needs it on macOS, the Android/iOS app IDs registered
   in Firebase, and an optional `GoogleService-Info.plist`/`google-services.json`
