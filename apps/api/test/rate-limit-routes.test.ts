@@ -15,6 +15,7 @@ import { createMediaRoutes, type MediaRoutesConfig } from '../src/modules/media/
 import { createDiscoveryRoutes } from '../src/modules/discovery/routes.js';
 import type { DiscoveryCity, LocationCatalog } from '../src/modules/discovery/location.js';
 import { processImage } from '../src/modules/media/processing.js';
+import { ConcurrencyLimiter } from '../src/modules/rate-limit/concurrency.js';
 import { InMemoryMediaStorage } from '../src/adapters/media/in-memory.js';
 import { createEmptyProfile } from '../src/modules/profiles/schema.js';
 import { createDefaultPreferences } from '../src/modules/preferences/schema.js';
@@ -116,7 +117,7 @@ async function seedUploader(name: string): Promise<void> {
   });
 }
 
-function mediaApp(limits: Partial<MediaRoutesConfig>) {
+function mediaApp(limits: Partial<MediaRoutesConfig>, uploadSlots?: ConcurrencyLimiter) {
   const storage = new InMemoryMediaStorage();
   const app = createApp({
     mongoCheck: async () => true,
@@ -126,7 +127,7 @@ function mediaApp(limits: Partial<MediaRoutesConfig>) {
         db,
         auth,
         { MEDIA_MAX_BYTES: 10 * 1024 * 1024, MEDIA_LOCAL_DIR: 'unused', ...limits },
-        { profileAccess: { canViewProfile: async () => true }, storage, now: () => clock.now },
+        { profileAccess: { canViewProfile: async () => true }, storage, now: () => clock.now, uploadSlots },
       ),
     ],
   });
@@ -340,19 +341,20 @@ describe('POST /v1/me/photos: concurrent uploads per process', () => {
 
   it('holds a slot while the body is still arriving and frees it when the client gives up', async () => {
     await seedUploader('alice');
-    const app = mediaApp({ MEDIA_MAX_CONCURRENT_UPLOADS: 1 });
+    const slots = new ConcurrencyLimiter(1);
+    const app = mediaApp({ MEDIA_MAX_CONCURRENT_UPLOADS: 1 }, slots);
     const server = await listen(app);
     const stalled = stalledUpload(server.port, 'alice');
     stalled.response.catch(() => undefined); // destroyed below without a response
     try {
-      await vi.waitFor(async () => {
-        expect((await upload(app, 'alice', NOT_AN_IMAGE)).status).toBe(503);
-      }, { timeout: 3000, interval: 25 });
+      // Watch the slot instead of probing with uploads: a probe could hold the
+      // only slot just as the stalled upload arrives and turn it away
+      await vi.waitFor(() => expect(slots.inFlight).toBe(1), { timeout: 5000, interval: 10 });
+      expect((await upload(app, 'alice', NOT_AN_IMAGE)).status).toBe(503);
 
       stalled.req.destroy();
-      await vi.waitFor(async () => {
-        expect((await upload(app, 'alice', NOT_AN_IMAGE)).status).toBe(415);
-      }, { timeout: 3000, interval: 25 });
+      await vi.waitFor(() => expect(slots.inFlight).toBe(0), { timeout: 5000, interval: 10 });
+      expect((await upload(app, 'alice', NOT_AN_IMAGE)).status).toBe(415);
     } finally {
       stalled.req.destroy();
       await server.close();

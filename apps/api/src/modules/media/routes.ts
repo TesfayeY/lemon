@@ -40,6 +40,8 @@ export interface MediaRoutesOptions {
   storage?: MediaStorage;
   /** Clock for the hourly upload-attempt window (tests) */
   now?: () => Date;
+  /** Upload slots for this router (tests observe them); defaults to MEDIA_MAX_CONCURRENT_UPLOADS */
+  uploadSlots?: ConcurrencyLimiter;
 }
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
@@ -73,9 +75,8 @@ export function createMediaRoutes(
     ? null
     : createAccountRateLimiter(db, { action: 'photo_upload', limit: config.PHOTO_UPLOADS_PER_HOUR, windowMs: HOUR_MS }, options.now);
   // Uploads being read, decoded and stored at once in this process: bounds buffered bytes and decode work
-  const uploadSlots = config.MEDIA_MAX_CONCURRENT_UPLOADS === undefined
-    ? null
-    : new ConcurrencyLimiter(config.MEDIA_MAX_CONCURRENT_UPLOADS);
+  const uploadSlots = options.uploadSlots
+    ?? (config.MEDIA_MAX_CONCURRENT_UPLOADS === undefined ? null : new ConcurrencyLimiter(config.MEDIA_MAX_CONCURRENT_UPLOADS));
 
   // Bounded in-memory parse: busboy stops reading at fileSize and multer drains the rest
   const parseMultipart = multer({
