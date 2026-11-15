@@ -17,7 +17,7 @@
 | 10 | Firestore rooms, access rules, provisioning | In Progress (rules + emulator tests merged; provisioning waits on Phase 09) | 2026-10-25 |
 | 11 | Reliable messaging and conversation UI | Not Started | |
 | 12 | Block, unmatch, report with race safety | Not Started | |
-| 13 | Moderation/admin workflow | In Progress (staff roles, review API, audit log, suspend/restore and CLI merged; admin UI target and P-08 open) | 2026-11-10 |
+| 13 | Moderation/admin workflow | In Progress (staff roles, photo review API, audit log, suspend/restore with session revocation and CLI merged; prompt review removed by D-13; admin UI target and P-08 open) | 2026-11-15 |
 | 14 | Notifications and push adapter | Not Started | |
 | 15 | Pause, deletion, account lifecycle | Not Started | |
 | 16 | Localization, accessibility, network polish | Not Started | |
@@ -30,8 +30,17 @@ Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open
 
 - Merged: photo uploads and review (05), daily like quota and likes API (08), Firestore room rules (10), discovery API (07), public profile projection with photo and profile access checks (04), Flutter onboarding and profile editing (06), Flutter sign-in screens (03), admin moderation foundation (13), oxlint setup
 - Decided 2026-11-10: D-10 (declined likers stay hidden), D-11 (no sent-likes list), D-12 (photo access follows profile access)
+- Decided 2026-11-12: D-13 (prompt answers publish without manual review; a member report option comes later; photos keep review)
+- Review fixes merged 2026-11-15 (from the 2026-11-15 code review; details in each branch's commits and `docs/features/`):
+  - Likes require the same mutual eligibility as viewing the profile (`fix/likes-require-profile-access`)
+  - Discovery pool skips people already acted on and inactive accounts before the scan budget (`fix/discovery-pool-fairness`)
+  - Suspended and deleting accounts get 403 on own-account routes and their sessions are revoked; readiness can no longer undo a suspension; an under-18 birth date locks the age gate; production refuses Firebase emulator settings (`fix/account-safety`)
+  - Rate limits: 10 photo uploads/hour, 4 concurrent uploads per process, 30 new Discover sessions/hour, generic per-account request bucket (`fix/rate-limits`, `docs/features/rate-limits.md`)
+  - Malformed JSON gets 4xx, no PII in logs, local Firebase readiness check, multer 2.5.0 (0 audit findings), worker process runs media cleanup (`fix/api-hardening`)
+  - Android INTERNET permission and app label; release builds require an https API URL (`fix/mobile-release-config`)
+  - Prompt answers publish immediately, prompt review queue removed (`feat/prompts-publish-immediately`)
 - Next: Flutter Discover and Likes screens; Phase 09 matches (accept a like, matched pairs can view each other)
-- Waiting on owner: P-03, P-04 (Firebase Storage adapter), P-07 (launch metros), P-08 (moderation staffing), P-10 (like allowance), Firebase project setup for sign-in, admin UI target
+- Waiting on owner: P-03, P-04 (Firebase Storage adapter), P-07 (launch metros), P-08 (photo moderation staffing), P-10 (like allowance), rate-limit pilot values (`docs/features/rate-limits.md`), Firebase project setup for sign-in, admin UI target
 
 ## Toolchains Installed
 
@@ -110,4 +119,4 @@ Phases 00-03 complete. Phase 04 deliverables are built and tested; it stays open
 - API route tests use an in-memory collection stand-in; real-Mongo race tests are Phase 17
 - Account deletion must also purge `promptAnswersArchive`; drop the prompt answer migration once every environment has run it
 
-## Total: 663 tests passing (479 API + 184 Flutter), as of 2026-11-10
+## Total: 775 tests passing (585 API + 190 Flutter), as of 2026-11-15
