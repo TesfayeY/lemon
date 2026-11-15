@@ -16,9 +16,9 @@ FakeBackend readyBackend() {
     backend.seedPhoto();
   }
   backend
-    ..seedPrompt('prompt-tradition', approvedText: 'Coffee with my aunts.')
-    ..seedPrompt('prompt-sunday', approvedText: 'A long walk by the lake.')
-    ..seedPrompt('prompt-home', approvedText: 'Grandmother\'s kitchen.');
+    ..seedPrompt('prompt-tradition', 'Coffee with my aunts.')
+    ..seedPrompt('prompt-sunday', 'A long walk by the lake.')
+    ..seedPrompt('prompt-home', 'Grandmother\'s kitchen.');
   return backend;
 }
 
@@ -135,17 +135,14 @@ void main() {
   });
 
   group('preview', () {
-    testWidgets('shows what others see: private fields and pending content '
-        'are absent', (tester) async {
+    testWidgets('shows what others see: private fields and photos in review '
+        'are absent, answers are shown', (tester) async {
       final backend = readyBackend();
       backend.profile
         ..['occupation'] = 'Pharmacist'
         ..['occupationDisplay'] = 'public'
         ..['hometown'] = 'Asmara'
         ..['hometownDisplay'] = 'private';
-      backend.prompts.first
-        ..['pendingText'] = 'An edit still waiting for review.'
-        ..['state'] = 'pending';
       backend.seedPhoto(state: 'pending');
       await openYou(tester, backend);
       await tapText(tester, 'Preview your profile');
@@ -155,7 +152,8 @@ void main() {
       expect(find.text('Looking for something serious'), findsOneWidget);
       await scrollToVisible(tester, find.text('Pharmacist'));
       expect(find.text('Asmara'), findsNothing);
-      expect(find.text('An edit still waiting for review.'), findsNothing);
+      // Answers are on the profile as soon as they are saved (D-13)
+      await scrollToVisible(tester, find.text('Coffee with my aunts.'));
       // Only approved photos are shown
       expect(find.bySemanticsLabel('Photo 4'), findsNothing);
     });

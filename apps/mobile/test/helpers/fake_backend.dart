@@ -5,7 +5,8 @@ import 'package:http/testing.dart';
 
 /// In-memory stand-in for the Lemon API, shaped like `contracts/openapi.yaml`
 /// and `contracts/openapi/media.yaml`. It keeps just enough server behavior
-/// (revisions, review states, readiness) to drive the Flutter screens.
+/// (revisions, photo review states, readiness) to drive the Flutter screens.
+/// Prompt answers publish on save (D-13), as on the server.
 ///
 /// All people and places are fictional.
 class FakeBackend {
@@ -153,21 +154,6 @@ class FakeBackend {
     photoRevision++;
   }
 
-  void approveAllPrompts() {
-    for (final a in prompts) {
-      if (a['state'] == 'pending') {
-        a['approvedText'] = a['pendingText'];
-        a['pendingText'] = null;
-        a['state'] = 'approved';
-      }
-    }
-  }
-
-  void rejectPrompt(String id) {
-    final answer = prompts.firstWhere((a) => a['id'] == id);
-    answer['state'] = 'rejected';
-  }
-
   /// Adds a photo directly, as if uploaded earlier.
   String seedPhoto({String state = 'approved', Map<String, Object?>? rejection}) {
     final id = 'photo-${++_photoIds}';
@@ -176,27 +162,25 @@ class FakeBackend {
     return id;
   }
 
-  /// Adds a prompt answer directly.
+  /// Adds a published prompt answer directly.
   String seedPrompt(
-    String promptId, {
-    String? approvedText,
-    String? pendingText,
-    String state = 'approved',
+    String promptId,
+    String text, {
     int revision = 1,
+    int contentVersion = 1,
   }) {
     final id = 'answer-${++_promptIds}';
     prompts.add({
       'id': id,
       'promptId': promptId,
-      'approvedText': approvedText,
-      'pendingText': pendingText,
-      'state': state,
+      'text': text,
       'revision': revision,
+      'contentVersion': contentVersion,
     });
     return id;
   }
 
-  /// Fills every required field except review-gated content.
+  /// Fills every required field except photos and prompt answers.
   void completeBasics() {
     birthDate = '1994-06-15';
     termsVersion = '1.0';
@@ -221,7 +205,7 @@ class FakeBackend {
       if (city == null) 'location',
       if (profile['intention'] == null) 'intention',
       if (photos.where((p) => p['state'] == 'approved').length < 3) 'photos',
-      if (prompts.where((a) => a['approvedText'] != null).length < 3) 'promptAnswers',
+      if (prompts.length < 3) 'promptAnswers',
       if (accountStatus == 'suspended') 'accountSuspended',
     ];
   }
@@ -264,9 +248,7 @@ class FakeBackend {
       ...Map.of(profile)..remove('revision'),
       'cityName': city?['name'],
       'stateCode': city?['stateCode'],
-      'promptAnswers': [
-        for (final a in prompts) {...a, 'promptText': _promptText(a['promptId']! as String)},
-      ],
+      'promptAnswers': [for (final a in prompts) _selfAnswer(a)],
       'revision': profile['revision'],
       'profileReady': missing.isEmpty,
     };
@@ -303,15 +285,7 @@ class FakeBackend {
       'languages': profile['languagesDisplay'] == 'public' ? profile['languages'] : <String>[],
       'religion': shown('religion'),
       'promptAnswers': [
-        for (final a in prompts)
-          if (a['approvedText'] != null)
-            {
-              'id': a['id'],
-              'promptId': a['promptId'],
-              'promptText': _promptText(a['promptId']! as String),
-              'text': a['approvedText'],
-              'contentVersion': a['publishedRevision'] ?? a['revision'] ?? 1,
-            },
+        for (final a in prompts) Map.of(_selfAnswer(a))..remove('revision'),
       ],
       'photos': [
         for (final p in photos.where((p) => p['state'] == 'approved').toList()
@@ -327,6 +301,15 @@ class FakeBackend {
       ],
     };
   }
+
+  Map<String, Object?> _selfAnswer(Map<String, Object?> a) => {
+    'id': a['id'],
+    'promptId': a['promptId'],
+    'promptText': _promptText(a['promptId']! as String),
+    'text': a['text'],
+    'revision': a['revision'],
+    'contentVersion': a['contentVersion'],
+  };
 
   Map<String, Object?> _photo(String id, String state, {Map<String, Object?>? rejection}) => {
     'id': id,
@@ -411,13 +394,9 @@ class FakeBackend {
           return _error(409, 'DUPLICATE_PROMPT', 'You already answered this prompt');
         }
         if (prompts.length >= 3) return _error(422, 'PROMPT_LIMIT', 'At most 3');
-        final id = seedPrompt(
-          body['promptId']! as String,
-          pendingText: body['text']! as String,
-          state: 'pending',
-        );
+        seedPrompt(body['promptId']! as String, body['text']! as String);
         return _json(201, {
-          'data': {'id': id, 'promptId': body['promptId'], 'state': 'pending', 'revision': 1},
+          'data': _selfAnswer(prompts.last),
           'meta': {'requestId': 'fake'},
         });
       case ('GET', '/v1/me/photos'):
@@ -463,11 +442,14 @@ class FakeBackend {
       if (body['expectedRevision'] != answer['revision']) {
         return _conflict(answer['revision']! as int);
       }
+      // Published at once; only new words are a new content version
+      if (answer['text'] != body['text']) {
+        answer['contentVersion'] = (answer['contentVersion']! as int) + 1;
+      }
       answer
-        ..['pendingText'] = body['text']
-        ..['state'] = 'pending'
+        ..['text'] = body['text']
         ..['revision'] = (answer['revision']! as int) + 1;
-      return _ok({'id': answer['id'], 'state': 'pending', 'revision': answer['revision']});
+      return _ok(_selfAnswer(answer));
     }
     if (method == 'DELETE' && path.startsWith('/v1/me/prompts/')) {
       prompts.removeWhere((a) => a['id'] == path.split('/').last);

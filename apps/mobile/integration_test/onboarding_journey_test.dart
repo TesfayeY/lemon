@@ -40,9 +40,7 @@ void main() {
     await skipAbout(tester);
     expect(find.text('Almost there'), findsOneWidget);
 
-    backend
-      ..approveAllPhotos()
-      ..approveAllPrompts();
+    backend.approveAllPhotos();
     await tapText(tester, 'Check again');
     await tapText(tester, 'Start exploring');
     expect(find.byType(NavigationBar), findsOneWidget);

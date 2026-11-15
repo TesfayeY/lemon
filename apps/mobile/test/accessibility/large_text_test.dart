@@ -69,18 +69,13 @@ void main() {
     });
   }
 
-  testWidgets('prompt editor with every review state fits at 200% text', (
+  testWidgets('prompt editor with three answers fits at 200% text', (
     tester,
   ) async {
     final backend = FakeBackend()
-      ..seedPrompt('prompt-tradition', approvedText: 'Coffee with my aunts.')
-      ..seedPrompt(
-        'prompt-sunday',
-        approvedText: 'Walks.',
-        pendingText: 'A long walk, then injera at home.',
-        state: 'pending',
-      )
-      ..seedPrompt('prompt-home', pendingText: 'Declined.', state: 'rejected');
+      ..seedPrompt('prompt-tradition', 'Coffee with my aunts.')
+      ..seedPrompt('prompt-sunday', 'A long walk, then injera at home.')
+      ..seedPrompt('prompt-home', 'My grandmother\'s kitchen in the morning.');
     await pumpLemon(
       tester,
       backend: backend,

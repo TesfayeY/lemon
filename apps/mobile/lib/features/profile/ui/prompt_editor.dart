@@ -5,7 +5,6 @@ import '../../../app/providers.dart';
 import '../../../core/catalogs/catalogs.dart';
 import '../../../core/l10n/failure_messages.dart';
 import '../../../core/l10n/l10n.dart';
-import '../../../core/theme/lemon_colors.dart';
 import '../../../core/theme/lemon_spacing.dart';
 import '../../../core/theme/lemon_typography.dart';
 import '../../../core/widgets/async_loader.dart';
@@ -16,33 +15,9 @@ import '../../../core/widgets/revision_conflict.dart';
 import '../data/profile.dart';
 import '../domain/validation.dart';
 
-/// Whether an answer still has (or will have) text on the profile: it is
-/// published, or waiting for its first review. Rejected first answers need
-/// replacing.
-bool answerCounts(SelfPromptAnswer answer) =>
-    answer.approvedText != null || answer.state != ReviewState.rejected;
-
-/// Labeled review state for a prompt answer.
-StatusBadge promptStateBadge(AppLocalizations l10n, ReviewState state) =>
-    switch (state) {
-      ReviewState.pending => StatusBadge(
-        label: l10n.promptStatePending,
-        icon: Icons.schedule,
-      ),
-      ReviewState.approved => StatusBadge(
-        label: l10n.promptStateApproved,
-        icon: Icons.check_circle_outline,
-        color: LemonColors.success,
-      ),
-      ReviewState.rejected => StatusBadge(
-        label: l10n.promptStateRejected,
-        icon: Icons.error_outline,
-        color: LemonColors.error,
-      ),
-    };
-
-/// Three prompt answers with their review states, and actions to add,
-/// replace or remove them. Each action saves immediately.
+/// Three prompt answers and actions to add, edit or remove them. Each action
+/// saves immediately, and answers are on the profile as soon as they are
+/// saved (D-13): there is no review step for prompts.
 class PromptEditor extends ConsumerStatefulWidget {
   const PromptEditor({
     super.key,
@@ -158,7 +133,7 @@ class _PromptEditorState extends ConsumerState<PromptEditor> {
     final l10n = context.l10n;
     const total = ProfileLimits.promptAnswersRequired;
     final answers = profile.promptAnswers;
-    final counted = answers.where(answerCounts).length;
+    final counted = answers.length;
     final error = _error;
     return ListView(
       padding: const EdgeInsets.all(LemonSpacing.lg),
@@ -200,8 +175,7 @@ class _PromptEditorState extends ConsumerState<PromptEditor> {
   }
 }
 
-/// One answer as its owner sees it: published text, the submission waiting
-/// for review, or a respectful rejection with a replace action.
+/// One answer as its owner sees it, exactly as it appears on the profile.
 class PromptAnswerCard extends StatelessWidget {
   const PromptAnswerCard({
     super.key,
@@ -217,9 +191,6 @@ class PromptAnswerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
-    final approved = answer.approvedText;
-    final pending = answer.pendingText;
-    final rejected = answer.state == ReviewState.rejected;
     return LemonCard(
       margin: EdgeInsets.zero,
       child: Column(
@@ -230,35 +201,11 @@ class PromptAnswerCard extends StatelessWidget {
             style: LemonTypography.caption.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: LemonSpacing.sm),
-          promptStateBadge(l10n, answer.state),
-          if (approved != null) ...[
-            const SizedBox(height: LemonSpacing.md),
-            Text(l10n.promptPublishedLabel, style: LemonTypography.caption),
-            Text(approved, style: LemonTypography.body),
-          ],
-          if (pending != null && !rejected) ...[
-            const SizedBox(height: LemonSpacing.md),
-            Text(l10n.promptPendingLabel, style: LemonTypography.caption),
-            Text(pending, style: LemonTypography.body),
-            if (approved != null) ...[
-              const SizedBox(height: LemonSpacing.sm),
-              InlineMessage(message: l10n.promptPublishedNote),
-            ],
-          ],
-          if (rejected) ...[
-            const SizedBox(height: LemonSpacing.md),
-            InlineMessage(
-              message: l10n.promptRejectedReason,
-              tone: MessageTone.error,
-            ),
-          ],
+          Text(answer.text, style: LemonTypography.body),
           const SizedBox(height: LemonSpacing.sm),
           Wrap(
             children: [
-              TextButton(
-                onPressed: onEdit,
-                child: Text(rejected ? l10n.promptReplace : l10n.promptEdit),
-              ),
+              TextButton(onPressed: onEdit, child: Text(l10n.promptEdit)),
               TextButton(onPressed: onRemove, child: Text(l10n.promptRemove)),
             ],
           ),
@@ -375,8 +322,8 @@ class _PromptPickerScreenState extends State<PromptPickerScreen> {
   }
 }
 
-/// Writes a new answer, or a replacement for [existing]. Replacements keep the
-/// approved text published until review accepts the new one.
+/// Writes a new answer, or new text for [existing]. Either is on the profile
+/// as soon as it is saved.
 class PromptComposerScreen extends ConsumerStatefulWidget {
   const PromptComposerScreen({
     super.key,
@@ -395,11 +342,7 @@ class PromptComposerScreen extends ConsumerStatefulWidget {
 }
 
 class _PromptComposerScreenState extends ConsumerState<PromptComposerScreen> {
-  late final _text = TextEditingController(
-    text: widget.existing?.state == ReviewState.rejected
-        ? ''
-        : widget.existing?.pendingText ?? widget.existing?.approvedText,
-  );
+  late final _text = TextEditingController(text: widget.existing?.text);
   bool _attempted = false;
   bool _busy = false;
   String? _error;
@@ -450,7 +393,7 @@ class _PromptComposerScreenState extends ConsumerState<PromptComposerScreen> {
           return;
         }
       }
-      // The answer card shows the new "In review" state
+      // The editor reloads and shows the saved answer
       if (mounted) Navigator.of(context).pop(true);
     } on Object catch (e) {
       if (mounted) setState(() => _error = describeFailure(context.l10n, e));
@@ -475,7 +418,6 @@ class _PromptComposerScreenState extends ConsumerState<PromptComposerScreen> {
             null => null,
           };
     final error = _error;
-    final existing = widget.existing;
     return Scaffold(
       appBar: AppBar(title: Text(l10n.promptAnswerLabel)),
       body: SafeArea(
@@ -487,16 +429,6 @@ class _PromptComposerScreenState extends ConsumerState<PromptComposerScreen> {
               child: Text(widget.promptText, style: LemonTypography.section),
             ),
             const SizedBox(height: LemonSpacing.base),
-            if (existing?.state == ReviewState.rejected) ...[
-              InlineMessage(
-                message: l10n.promptRejectedReason,
-                tone: MessageTone.error,
-              ),
-              const SizedBox(height: LemonSpacing.base),
-            ] else if (existing?.approvedText != null) ...[
-              InlineMessage(message: l10n.promptPublishedNote),
-              const SizedBox(height: LemonSpacing.base),
-            ],
             TextField(
               controller: _text,
               autofocus: true,

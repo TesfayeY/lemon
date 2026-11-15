@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lemon/features/profile/data/profile.dart';
 import 'package:lemon/features/profile/ui/photo_editor.dart';
 import 'package:lemon/features/profile/ui/prompt_editor.dart';
 
@@ -222,83 +221,65 @@ void main() {
   });
 
   group('prompt editor', () {
-    testWidgets('shows approved, pending and rejected answers with the right '
-        'copy and actions', (tester) async {
+    testWidgets('shows each answer as it appears on the profile, with no '
+        'review state', (tester) async {
       final backend = FakeBackend()
-        ..seedPrompt('prompt-tradition', approvedText: 'Coffee with my aunts.')
-        ..seedPrompt(
-          'prompt-sunday',
-          approvedText: 'A long walk by the lake.',
-          pendingText: 'A long walk, then injera at home.',
-          state: 'pending',
-          revision: 2,
-        )
-        ..seedPrompt(
-          'prompt-home',
-          pendingText: 'Something the reviewer declined.',
-          state: 'rejected',
-        );
+        ..seedPrompt('prompt-tradition', 'Coffee with my aunts.')
+        ..seedPrompt('prompt-sunday', 'A long walk by the lake.', revision: 2);
       await pumpLemon(tester, backend: backend, home: promptScreen());
 
-      expect(find.text('Approved'), findsOneWidget);
+      expect(find.text('2 of 3 answered'), findsOneWidget);
       expect(find.text('Coffee with my aunts.'), findsOneWidget);
-
-      // Edit awaiting review: published text stays and is explained
-      expect(find.text('In review'), findsOneWidget);
       expect(find.text('A long walk by the lake.'), findsOneWidget);
-      expect(find.text('A long walk, then injera at home.'), findsOneWidget);
-      expect(
-        find.text(
-          'Your current answer stays on your profile until the new one is '
-          'reviewed.',
-        ),
-        findsOneWidget,
-      );
-
-      await scrollToVisible(tester, find.text('Not approved'));
-      expect(
-        find.text(
-          "This answer doesn't fit our community guidelines. Please write a new "
-          'one.',
-        ),
-        findsOneWidget,
-      );
-      expect(find.text('Something the reviewer declined.'), findsNothing);
-      expect(find.text('Write a new answer'), findsOneWidget);
-      // A rejected first answer does not count toward the three
-      expect(find.text('2 of 3 answered', skipOffstage: false), findsOneWidget);
+      expect(find.text('Edit answer'), findsNWidgets(2));
+      // Prompts publish on save (D-13): nothing is "in review" or rejected
+      for (final copy in ['In review', 'Approved', 'Not approved', 'Waiting for review']) {
+        expect(find.text(copy, skipOffstage: false), findsNothing);
+      }
     });
 
-    testWidgets('replacing a rejected answer patches it with its revision', (
-      tester,
-    ) async {
-      final backend = FakeBackend()
-        ..seedPrompt(
-          'prompt-home',
-          pendingText: 'Declined text.',
-          state: 'rejected',
-          revision: 3,
-        );
+    testWidgets('a new answer is saved and shown right away', (tester) async {
+      final backend = FakeBackend();
       await pumpLemon(tester, backend: backend, home: promptScreen());
 
-      await tapText(tester, 'Write a new answer');
-      expect(find.widgetWithText(TextField, 'Declined text.'), findsNothing);
+      await tapVisible(tester, find.widgetWithText(OutlinedButton, 'Choose a prompt'));
+      await tapText(tester, 'My ideal Sunday looks like…');
+      await tester.enterText(find.widgetWithText(TextField, 'Your answer'), 'Church, then brunch.');
+      await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Save answer'));
+
+      expect(backend.sent('POST', '/v1/me/prompts').single.body, {
+        'promptId': 'prompt-sunday',
+        'text': 'Church, then brunch.',
+      });
+      expect(find.text('Church, then brunch.'), findsOneWidget);
+      expect(find.text('1 of 3 answered'), findsOneWidget);
+    });
+
+    testWidgets('editing starts from the current text and patches it with '
+        'its revision', (tester) async {
+      final backend = FakeBackend()
+        ..seedPrompt('prompt-home', 'Grandmother\'s kitchen.', revision: 3);
+      await pumpLemon(tester, backend: backend, home: promptScreen());
+
+      await tapText(tester, 'Edit answer');
+      expect(find.widgetWithText(TextField, 'Grandmother\'s kitchen.'), findsOneWidget);
       await tester.enterText(
-        find.widgetWithText(TextField, 'Your answer'),
+        find.byType(TextField),
         'My grandmother\'s kitchen in the morning.',
       );
-      await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Submit for review'));
+      await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Save answer'));
 
       expect(backend.sent('PATCH', '/v1/me/prompts/answer-1').single.body, {
         'expectedRevision': 3,
         'text': 'My grandmother\'s kitchen in the morning.',
       });
-      expect(find.text('In review'), findsOneWidget);
+      expect(find.text('My grandmother\'s kitchen in the morning.'), findsOneWidget);
+      expect(backend.prompts.single['contentVersion'], 2);
     });
 
     testWidgets('the picker leaves out prompts already answered', (tester) async {
       final backend = FakeBackend()
-        ..seedPrompt('prompt-tradition', approvedText: 'Coffee.');
+        ..seedPrompt('prompt-tradition', 'Coffee.');
       await pumpLemon(tester, backend: backend, home: promptScreen());
 
       await tapVisible(tester, find.widgetWithText(OutlinedButton, 'Choose a prompt'));
@@ -330,7 +311,7 @@ void main() {
       await tapVisible(tester, find.widgetWithText(OutlinedButton, 'Choose a prompt'));
       await tapText(tester, 'My ideal Sunday looks like…');
       await tester.enterText(find.widgetWithText(TextField, 'Your answer'), 'Church, then brunch.');
-      await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Submit for review'));
+      await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Save answer'));
 
       expect(
         find.text('You already answered this prompt. Choose a different one.'),
@@ -345,7 +326,7 @@ void main() {
       await tapVisible(tester, find.widgetWithText(OutlinedButton, 'Choose a prompt'));
       await tapText(tester, 'My ideal Sunday looks like…');
       await tester.enterText(find.widgetWithText(TextField, 'Your answer'), '   ');
-      await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Submit for review'));
+      await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Save answer'));
 
       expect(find.text('Write an answer.'), findsOneWidget);
       expect(backend.sent('POST', '/v1/me/prompts'), isEmpty);
@@ -353,7 +334,7 @@ void main() {
 
     testWidgets('removing an answer asks first', (tester) async {
       final backend = FakeBackend()
-        ..seedPrompt('prompt-tradition', approvedText: 'Coffee.');
+        ..seedPrompt('prompt-tradition', 'Coffee.');
       await pumpLemon(tester, backend: backend, home: promptScreen());
 
       await tapText(tester, 'Remove answer');
@@ -363,24 +344,28 @@ void main() {
       expect(backend.prompts, isEmpty);
     });
 
-    test('only answers with published or pending text count', () {
-      SelfPromptAnswer answer({String? approved, required ReviewState state}) =>
-          SelfPromptAnswer(
-            id: 'a',
-            promptId: 'p',
-            promptText: 'q',
-            approvedText: approved,
-            pendingText: 'text',
-            state: state,
-            revision: 1,
-          );
-      expect(answerCounts(answer(state: ReviewState.pending)), isTrue);
-      expect(answerCounts(answer(state: ReviewState.rejected)), isFalse);
-      // A declined edit leaves the published answer in place
-      expect(
-        answerCounts(answer(approved: 'Published.', state: ReviewState.rejected)),
-        isTrue,
+    testWidgets('continue needs three answers', (tester) async {
+      var continued = false;
+      final backend = FakeBackend()
+        ..seedPrompt('prompt-tradition', 'Coffee.')
+        ..seedPrompt('prompt-sunday', 'Walks.');
+      await pumpLemon(
+        tester,
+        backend: backend,
+        home: promptScreen(onContinue: () => continued = true),
       );
+
+      expect(find.text('Answer 3 prompts to continue.'), findsOneWidget);
+      final button = find.widgetWithText(ElevatedButton, 'Continue');
+      await scrollToVisible(tester, button);
+      expect(tester.widget<ElevatedButton>(button).onPressed, isNull);
+
+      await tapVisible(tester, find.widgetWithText(OutlinedButton, 'Choose a prompt'));
+      await tapText(tester, 'A place that feels like home…');
+      await tester.enterText(find.widgetWithText(TextField, 'Your answer'), 'Keren.');
+      await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Save answer'));
+      await tapVisible(tester, button);
+      expect(continued, isTrue);
     });
   });
 }
