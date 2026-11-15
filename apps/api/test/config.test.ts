@@ -57,4 +57,46 @@ describe('loadConfig', () => {
     const config = loadConfig();
     expect(config.PORT).toBe(3000);
   });
+
+  describe('Firebase emulator settings in production', () => {
+    beforeEach(() => {
+      process.env['NODE_ENV'] = 'production';
+      delete process.env['FIREBASE_AUTH_EMULATOR_HOST'];
+      delete process.env['FIRESTORE_EMULATOR_HOST'];
+    });
+
+    it('starts without emulator settings', () => {
+      expect(loadConfig().NODE_ENV).toBe('production');
+    });
+
+    it('refuses the Auth emulator host, which would accept unsigned tokens', () => {
+      process.env['FIREBASE_AUTH_EMULATOR_HOST'] = '127.0.0.1:9099';
+      expect(() => loadConfig()).toThrow('Firebase emulator settings are not allowed in production. Unset: FIREBASE_AUTH_EMULATOR_HOST');
+    });
+
+    it('refuses the Firestore emulator host', () => {
+      process.env['FIRESTORE_EMULATOR_HOST'] = '127.0.0.1:8080';
+      expect(() => loadConfig()).toThrow('Unset: FIRESTORE_EMULATOR_HOST');
+    });
+
+    it('names every emulator variable that is set', () => {
+      process.env['FIREBASE_AUTH_EMULATOR_HOST'] = '127.0.0.1:9099';
+      process.env['FIRESTORE_EMULATOR_HOST'] = '127.0.0.1:8080';
+      expect(() => loadConfig()).toThrow('Unset: FIREBASE_AUTH_EMULATOR_HOST, FIRESTORE_EMULATOR_HOST');
+    });
+
+    it('treats an empty value as set', () => {
+      process.env['FIREBASE_AUTH_EMULATOR_HOST'] = '';
+      expect(() => loadConfig()).toThrow('Unset: FIREBASE_AUTH_EMULATOR_HOST');
+    });
+
+    it('still allows emulators in development and test', () => {
+      process.env['FIREBASE_AUTH_EMULATOR_HOST'] = '127.0.0.1:9099';
+      process.env['FIRESTORE_EMULATOR_HOST'] = '127.0.0.1:8080';
+      for (const env of ['development', 'test']) {
+        process.env['NODE_ENV'] = env;
+        expect(loadConfig().FIREBASE_AUTH_EMULATOR_HOST).toBe('127.0.0.1:9099');
+      }
+    });
+  });
 });
