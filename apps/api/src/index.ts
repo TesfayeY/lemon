@@ -12,6 +12,7 @@ import { createMediaRoutes } from './modules/media/routes.js';
 import { createConfiguredDiscoveryService, createDiscoveryRoutes } from './modules/discovery/routes.js';
 import { createLikesRoutes } from './modules/likes/routes.js';
 import { createAdminRoutes } from './modules/admin/routes.js';
+import { installRequestRateLimit } from './modules/rate-limit/token-bucket.js';
 
 async function main() {
   const config = loadConfig();
@@ -32,6 +33,9 @@ async function main() {
 
   // One discovery service: Discover, profile reads and photo reads recheck the same rules
   const discovery = createConfiguredDiscoveryService(db, config);
+
+  // Generic per-account request limit for every authenticated route (per process)
+  installRequestRateLimit(config);
 
   // Create and start the Express app
   const app = createApp({

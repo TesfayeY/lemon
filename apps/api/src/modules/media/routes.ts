@@ -13,6 +13,9 @@ import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middlew
 import { canAuthenticate, canInteract, type UserDocument } from '../auth/account.js';
 import type { ProfileAccess } from '../profiles/routes.js';
 import { recomputeReadiness } from '../profiles/readiness-service.js';
+import { ConcurrencyLimiter } from '../rate-limit/concurrency.js';
+import { sendRateLimited, setRetryAfter } from '../rate-limit/http.js';
+import { createAccountRateLimiter, HOUR_MS } from '../rate-limit/window-counter.js';
 import { toOwnerPhotoDTO } from './dto.js';
 import { bumpPhotoSetRevision, findOrCreatePhotoSet, purgePhotoObjects } from './photo-set.js';
 import { MASTER_CONTENT_TYPE, MediaValidationError, processImage, VARIANT_CONTENT_TYPE, type ProcessedImage } from './processing.js';
@@ -21,7 +24,12 @@ import {
   photoObjectKeys, type PhotoDocument, type PhotoSetDocument, type PhotoVariant,
 } from './schema.js';
 
-export type MediaRoutesConfig = Pick<Env, 'MEDIA_MAX_BYTES' | 'MEDIA_LOCAL_DIR'>;
+/**
+ * loadConfig() always sets the upload limits. A hand-built config that leaves
+ * one out (tests) leaves that limit off.
+ */
+export type MediaRoutesConfig = Pick<Env, 'MEDIA_MAX_BYTES' | 'MEDIA_LOCAL_DIR'>
+  & Partial<Pick<Env, 'PHOTO_UPLOADS_PER_HOUR' | 'MEDIA_MAX_CONCURRENT_UPLOADS'>>;
 
 export interface MediaRoutesOptions {
   /**
@@ -30,9 +38,13 @@ export interface MediaRoutesOptions {
    */
   profileAccess: ProfileAccess;
   storage?: MediaStorage;
+  /** Clock for the hourly upload-attempt window (tests) */
+  now?: () => Date;
 }
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+/** Retry hint when every upload slot in this process is taken */
+const UPLOADS_BUSY_RETRY_AFTER_SECONDS = 5;
 /** Each failed attempt means another upload or reorder committed, so this bounds contention. */
 const MAX_RESERVE_ATTEMPTS = 8;
 
@@ -55,6 +67,15 @@ export function createMediaRoutes(
   const users = db.collection<UserDocument>('users');
   const photos = db.collection<PhotoDocument>('photos');
   const photoSets = db.collection<PhotoSetDocument>('photoSets');
+
+  // Upload attempts per account per hour, shared by every process (docs/features/rate-limits.md)
+  const uploadAttempts = config.PHOTO_UPLOADS_PER_HOUR === undefined
+    ? null
+    : createAccountRateLimiter(db, { action: 'photo_upload', limit: config.PHOTO_UPLOADS_PER_HOUR, windowMs: HOUR_MS }, options.now);
+  // Uploads being read, decoded and stored at once in this process: bounds buffered bytes and decode work
+  const uploadSlots = config.MEDIA_MAX_CONCURRENT_UPLOADS === undefined
+    ? null
+    : new ConcurrencyLimiter(config.MEDIA_MAX_CONCURRENT_UPLOADS);
 
   // Bounded in-memory parse: busboy stops reading at fileSize and multer drains the rest
   const parseMultipart = multer({
@@ -224,6 +245,9 @@ export function createMediaRoutes(
   /**
    * POST /v1/me/photos
    * Upload one photo into private quarantine for review.
+   *
+   * Limits run before the multipart body is read, so a client over either one
+   * never makes the server buffer or decode its file.
    */
   router.post('/v1/me/photos', requireAuth, async (req: Request, res: Response) => {
     const user = await loadAccount(req, res);
@@ -235,6 +259,34 @@ export function createMediaRoutes(
       return;
     }
 
+    const release = uploadSlots ? uploadSlots.tryAcquire() : () => {};
+    if (!release) {
+      const retryAfterSeconds = setRetryAfter(res, UPLOADS_BUSY_RETRY_AFTER_SECONDS);
+      sendError(req, res, 503, 'UPLOADS_BUSY', 'Lots of photos are uploading right now. Please try again in a moment.', {
+        retryAfterSeconds,
+      }, true);
+      return;
+    }
+    try {
+      // A key already on a stored photo can only replay its result (or conflict) and is
+      // never decoded again, so it spends no attempt: a lost 201 can always be retried.
+      const replay = uploadAttempts !== null
+        && (await photos.findOne({ ownerId: user._id, idempotencyKey }, { projection: { _id: 1 } })) !== null;
+      if (uploadAttempts && !replay) {
+        const attempt = await uploadAttempts.consume(user._id);
+        if (!attempt.ok) {
+          sendRateLimited(req, res, attempt.retryAfterSeconds, 'You have uploaded a lot of photos recently. Please try again later.');
+          return;
+        }
+      }
+      await receiveUpload(req, res, user, idempotencyKey);
+    } finally {
+      release();
+    }
+  });
+
+  /** Read, validate, store and commit one upload (after the limits have passed). */
+  async function receiveUpload(req: Request, res: Response, user: UserDocument, idempotencyKey: string): Promise<void> {
     const file = await readUpload(req, res);
     if (!file) return;
     const requestHash = createHash('sha256').update(file.buffer).digest('hex');
@@ -302,7 +354,7 @@ export function createMediaRoutes(
       data: { id: photo._id, state: PhotoState.PENDING, order: photo.order, revision },
       meta: { requestId: req.requestId },
     });
-  });
+  }
 
   /**
    * GET /v1/me/photos

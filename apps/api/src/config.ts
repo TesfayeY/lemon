@@ -21,6 +21,14 @@ const envSchema = z.object({
   // Likes: new likes per UTC day (P-10 proposes 8, pending owner confirmation)
   LIKES_PER_UTC_DAY: z.coerce.number().int().min(0).default(8),
 
+  // Rate limits and upload bounds: proposed pilot values pending owner confirmation
+  // (spec "Proposed abuse limits"; see docs/features/rate-limits.md)
+  PHOTO_UPLOADS_PER_HOUR: z.coerce.number().int().positive().default(10), // per account, all processes
+  MEDIA_MAX_CONCURRENT_UPLOADS: z.coerce.number().int().positive().default(4), // per process
+  DISCOVERY_SESSIONS_PER_HOUR: z.coerce.number().int().positive().default(30), // per account, all processes
+  REQUEST_RATE_LIMIT_BURST: z.coerce.number().int().positive().default(60), // per account, per process
+  REQUEST_RATE_LIMIT_PER_SECOND: z.coerce.number().positive().default(2), // refill after the burst
+
   // Admin: account actions require a Firebase sign-in at most this many seconds old
   ADMIN_RECENT_AUTH_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(900),
 });

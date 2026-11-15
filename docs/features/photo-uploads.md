@@ -112,7 +112,7 @@ Follow the patterns in `apps/api/test/profiles.test.ts` (in-memory Db fake plus 
 
 ### Follow-ups (out of scope here)
 
-- Upload rate limit: the spec proposes 10 upload attempts per hour per account.
+- ~~Upload rate limit~~ Done in `fix/rate-limits`: 10 upload attempts per hour per account (MongoDB counter) and at most 4 uploads decoding at once per process, both checked before the body is read. See `docs/features/rate-limits.md`.
 - Phase 15 (account deletion): erase the user's `photos` records, including `deleted` ones (metadata only, no images), plus `photoSets` and any remaining objects. Retention period depends on P-06.
 - Phase 13: write the review state change and its `auditLog` entry in one Mongo transaction, and move review behind the role-checked admin API.
 - P-04 is still open: `FirebaseMediaStorage` is a stub that throws.
