@@ -1,12 +1,12 @@
 /**
  * Fixed reason catalogs for staff decisions. Every rejection, suspension and
  * restoration names one of these keys; free text goes only in the optional
- * internal note. Content reasons are owned by their modules because owners
- * see them; account reasons are staff-only.
+ * internal note. Photo reasons are owned by the media module because owners
+ * see them; account reasons are staff-only. Prompt answers have no review
+ * (D-13), so there is no prompt rejection catalog.
  */
 
 import { REJECTION_REASONS as PHOTO_REJECTION_REASONS } from '../media/review-service.js';
-import { PROMPT_REJECTION_REASONS } from '../profiles/prompt-review.js';
 
 export const SUSPENSION_REASONS = {
   harassment: 'Harassment or threats toward other members',
@@ -40,8 +40,6 @@ function options(catalog: Record<string, string>): ReasonOption[] {
 export function reasonCatalog() {
   return {
     photoRejection: options(PHOTO_REJECTION_REASONS),
-    promptAnswerRejection: Object.entries(PROMPT_REJECTION_REASONS)
-      .map(([code, { message }]) => ({ code, description: message })),
     accountSuspension: options(SUSPENSION_REASONS),
     accountRestore: options(RESTORE_REASONS),
   };

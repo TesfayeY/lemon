@@ -22,8 +22,10 @@ async function main() {
 
   await ensureIndexes(db);
   const migrated = await migratePromptAnswers(client, db);
-  if (migrated.slotted > 0 || migrated.archived > 0) {
-    console.log(`Upgraded prompt answers: ${migrated.slotted} slotted, ${migrated.archived} archived over the limit`);
+  if (Object.values(migrated).some(n => n > 0)) {
+    console.log(`Upgraded prompt answers: ${migrated.slotted} slotted, ${migrated.archived} archived over the limit, `
+      + `${migrated.published} published from review, ${migrated.rejectedDropped} rejected edits dropped, `
+      + `${migrated.deleted} rejected answers deleted`);
   }
 
   const firebaseApp = initFirebase(config);

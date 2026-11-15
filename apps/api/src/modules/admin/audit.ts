@@ -8,7 +8,7 @@
  *
  * Entries carry review state, catalog reasons and an optional staff note.
  * They never carry tokens, emails, birth dates, answer text or message text
- * (R-ADMIN-05); prompt decisions record a SHA-256 of the decided text instead.
+ * (R-ADMIN-05). Legacy prompt decisions recorded a SHA-256 of the decided text instead.
  */
 
 import type { ClientSession, Db } from 'mongodb';
@@ -21,11 +21,14 @@ export const ADMIN_AUDIT_COLLECTION = 'adminAuditLog';
 export type AdminAction =
   | 'photo.approve'
   | 'photo.reject'
+  // Legacy: prompt answer review ended with D-13. Nothing writes these any more,
+  // but entries from before stay in the append-only log and must stay readable.
   | 'prompt_answer.approve'
   | 'prompt_answer.reject'
   | 'account.suspend'
   | 'account.restore';
 
+/** 'promptAnswer' targets appear only on legacy prompt review entries */
 export type AuditTargetType = 'photo' | 'promptAnswer' | 'user';
 
 export interface AdminAuditEntry {
@@ -104,8 +107,7 @@ export async function ensureAdminIndexes(db: Db): Promise<void> {
     db.collection(ADMIN_AUDIT_COLLECTION).createIndex({ targetType: 1, targetId: 1, createdAt: 1 }),
     db.collection(ADMIN_AUDIT_COLLECTION).createIndex({ actorUid: 1, createdAt: -1 }),
     db.collection(ADMIN_AUDIT_COLLECTION).createIndex({ createdAt: -1 }),
-    // Review queues: pending items oldest first with an _id tie-breaker
+    // Photo review queue: pending photos oldest first with an _id tie-breaker
     db.collection('photos').createIndex({ state: 1, createdAt: 1, _id: 1 }),
-    db.collection('promptAnswers').createIndex({ state: 1, updatedAt: 1, _id: 1 }),
   ]);
 }

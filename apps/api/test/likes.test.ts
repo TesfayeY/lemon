@@ -14,6 +14,8 @@ import {
 } from '../src/modules/likes/index.js';
 import { QUOTAS_COLLECTION, type QuotaDocument } from '../src/modules/likes/quota.js';
 import { createEmptyProfile, type ProfileDocument, type PromptAnswerDocument } from '../src/modules/profiles/schema.js';
+import { createProfileRoutes } from '../src/modules/profiles/routes.js';
+import { createDefaultPreferences } from '../src/modules/preferences/schema.js';
 import { photoObjectKeys, type PhotoDocument } from '../src/modules/media/schema.js';
 import type { UserDocument } from '../src/modules/auth/account.js';
 import { createMultiUserAuth } from './support.js';
@@ -62,7 +64,7 @@ beforeEach(async () => {
   clock = NOW;
   guard = noopPairGuard;
   await Promise.all(
-    ['users', 'profiles', 'photos', 'promptAnswers', LIKES_COLLECTION, QUOTAS_COLLECTION]
+    ['users', 'profiles', 'preferences', 'photos', 'promptAnswers', LIKES_COLLECTION, QUOTAS_COLLECTION]
       .map(name => db.collection(name).deleteMany({})),
   );
 });
@@ -145,8 +147,6 @@ async function seedUser(name: string, overrides: Partial<UserDocument> = {}): Pr
     promptId: PROMPTS[i]!,
     slot: i,
     approvedText: `${name} answer ${i}`,
-    pendingText: null,
-    state: 'approved',
     revision: 1,
     publishedRevision: 1,
     createdAt: NOW,
@@ -418,20 +418,16 @@ describe('POST /v1/likes', () => {
       expect((await send('alice', promptTarget(bob, 0, 2))).status).toBe(201);
     });
 
-    it('rejects deleted, rejected, pending and unpublished targets', async () => {
+    it('rejects deleted, rejected and pending photos and deleted answers', async () => {
       await seedUser('alice');
       const bob = await seedUser('bob');
       const photos = db.collection<PhotoDocument>('photos');
       await photos.updateOne({ _id: bob.photoIds[0] }, { $set: { state: 'deleted', deletedAt: NOW } });
       await photos.updateOne({ _id: bob.photoIds[1] }, { $set: { state: 'rejected', moderationReason: 'low_quality' } });
       await photos.updateOne({ _id: bob.photoIds[2] }, { $set: { state: 'pending' } });
-      await db.collection<PromptAnswerDocument>('promptAnswers').updateOne(
-        { _id: bob.answerIds[0] },
-        { $set: { approvedText: null, pendingText: 'awaiting review', state: 'pending', publishedRevision: 0 } },
-      );
       await db.collection<PromptAnswerDocument>('promptAnswers').deleteOne({ _id: bob.answerIds[1] });
 
-      for (const body of [photoTarget(bob, 0), photoTarget(bob, 1), photoTarget(bob, 2), promptTarget(bob, 0), promptTarget(bob, 1)]) {
+      for (const body of [photoTarget(bob, 0), photoTarget(bob, 1), photoTarget(bob, 2), promptTarget(bob, 1)]) {
         const res = await send('alice', body);
         expect(res.status, `${JSON.stringify(body)}`).toBe(409);
         expect(res.body.error.code).toBe('TARGET_UNAVAILABLE');
@@ -440,18 +436,40 @@ describe('POST /v1/likes', () => {
       expect(await usedLikes('user-alice')).toBe(0);
     });
 
-    it('accepts a published answer whose newer edit is still awaiting review', async () => {
-      await seedUser('alice');
+    it('follows an owner edit at once: the old version goes stale and earlier likes show the change', async () => {
       const bob = await seedUser('bob');
-      await db.collection<PromptAnswerDocument>('promptAnswers').updateOne(
-        { _id: bob.answerIds[0] },
-        { $set: { pendingText: 'new words', state: 'pending', revision: 2 } },
+      await db.collection('preferences').insertOne({ ...createDefaultPreferences(bob.userId), acceptedGenderCategories: ['man'] });
+      await seedUser('alice');
+      await seedUser('carol');
+      expect((await send('alice', promptTarget(bob, 0, 1))).status).toBe(201);
+
+      // Answers publish on save (D-13): the edit is live with a new content version
+      const profileApp = createApp({
+        mongoCheck: async () => true,
+        firebaseCheck: async () => true,
+        routes: [createProfileRoutes(db, createMultiUserAuth(), { profileAccess: { canViewProfile: async () => true } })],
+      });
+      const edit = await request(profileApp).patch(`/v1/me/prompts/${bob.answerIds[0]}`).set('Authorization', as('bob'))
+        .send({ expectedRevision: 1, text: 'bob answer 0, rewritten' });
+      expect(edit.status).toBe(200);
+      expect(edit.body.data).toMatchObject({ text: 'bob answer 0, rewritten', revision: 2, contentVersion: 2 });
+
+      const stale = await send('carol', promptTarget(bob, 0, 1));
+      expect(stale.status).toBe(409);
+      expect(stale.body.error.code).toBe('TARGET_STALE');
+      expect((await send('carol', promptTarget(bob, 0, 2))).status).toBe(201);
+
+      const res = await incoming('bob');
+      expectContract(res, '/v1/likes/incoming', 'get');
+      const bySender = Object.fromEntries(
+        res.body.data.likes.map((l: { sender: { userId: string } }) => [l.sender.userId, l]),
       );
-      const res = await send('alice', promptTarget(bob, 0, 1));
-      expect(res.status).toBe(201);
-      const stored = (await likes.findOne({ _id: res.body.data.like.id }))!;
-      // Only published text is ever captured, never the submission awaiting review
-      expect(stored.contextSnapshot).toMatchObject({ answerText: 'bob answer 0' });
+      // The earlier like keeps the words that were liked, flagged as changed
+      expect(bySender['user-alice']).toMatchObject({ targetChanged: true, context: { kind: 'prompt', answerText: 'bob answer 0' } });
+      expect(bySender['user-carol']).toMatchObject({
+        targetChanged: false,
+        context: { kind: 'prompt', answerText: 'bob answer 0, rewritten' },
+      });
     });
   });
 

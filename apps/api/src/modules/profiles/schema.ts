@@ -44,22 +44,22 @@ export interface ProfileDocument {
 }
 
 /**
- * A prompt answer keeps its published text separate from the latest
- * submission, so an edit never replaces approved content before review.
- * Only review (Phase 05/13) moves pendingText into approvedText.
+ * A prompt answer publishes as soon as it is saved (D-13): there is no
+ * pre-approval, so the stored text is the text everyone sees. Text moderation
+ * will come from member reports later.
+ *
+ * The field keeps its pre-D-13 name `approvedText` so stored documents, likes
+ * and readiness need no rename. Answers saved under prompt review are upgraded
+ * at startup by prompt-answer-migration.ts.
  */
 export interface PromptAnswerDocument {
   _id: string;
   ownerId: string;
   promptId: string;
   slot: number; // 0..MAX_PROMPT_ANSWERS-1; unique per owner, so the database caps the count
-  approvedText: string | null; // published; the only text other users see
-  pendingText: string | null; // awaiting review; never published automatically
-  state: 'approved' | 'pending' | 'rejected'; // review state of the latest submission
+  approvedText: string; // the published text
   revision: number; // owner edit revision (two-device safety)
-  publishedRevision: number; // content version of approvedText; 0 = never published
-  /** PROMPT_REJECTION_REASONS key of the latest rejection; owner-only, meaningful only while state is 'rejected' */
-  rejectionReason?: string | null;
+  publishedRevision: number; // content version of approvedText, from 1; likes pin it
   createdAt: Date;
   updatedAt: Date;
 }

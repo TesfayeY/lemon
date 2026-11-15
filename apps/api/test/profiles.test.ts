@@ -3,9 +3,9 @@ import request from 'supertest';
 import type { Auth } from 'firebase-admin/auth';
 import { buildApp, createInMemoryDb, createMultiUserAuth, withInsertBarrier } from './support.js';
 import type { Db } from 'mongodb';
-import { graphemeLength, normalizeWhitespace } from '../src/modules/profiles/schema.js';
+import { createEmptyProfile, graphemeLength, normalizeWhitespace } from '../src/modules/profiles/schema.js';
 import { checkReadiness } from '../src/modules/profiles/readiness.js';
-import { toPublicProfileDTO } from '../src/modules/profiles/dto.js';
+import { toPublicProfileDTO, toSelfProfileDTO } from '../src/modules/profiles/dto.js';
 import { calculateAge } from '../src/modules/auth/adult-gate.js';
 import type { PromptAnswerDocument } from '../src/modules/profiles/schema.js';
 import type { UserDocument } from '../src/modules/auth/account.js';
@@ -184,17 +184,24 @@ describe('PATCH /v1/me/profile', () => {
 });
 
 describe('POST /v1/me/prompts', () => {
-  it('adds a prompt answer', async () => {
+  it('adds a prompt answer and returns the owner view of it', async () => {
     const app = buildApp();
     await bootstrapUser(app);
 
     const res = await request(app)
       .post('/v1/me/prompts')
       .set('Authorization', 'Bearer valid-token')
-      .send({ promptId: 'prompt-tradition', text: 'Ethiopian coffee ceremony' });
+      .send({ promptId: 'prompt-tradition', text: '  Ethiopian   coffee ceremony ' });
 
     expect(res.status).toBe(201);
-    expect(res.body.data.promptId).toBe('prompt-tradition');
+    expect(res.body.data).toEqual({
+      id: expect.any(String),
+      promptId: 'prompt-tradition',
+      promptText: 'A tradition I would love to share with you…',
+      text: 'Ethiopian coffee ceremony',
+      revision: 1,
+      contentVersion: 1,
+    });
   });
 
   it('rejects duplicate prompt', async () => {
@@ -663,18 +670,23 @@ describe('Server-owned fields', () => {
     expect(res.body.error.code).toBe('NO_UPDATES');
   });
 
-  it('cannot set a prompt answer state or revision', async () => {
+  it('cannot set a prompt answer\'s owner, revisions or stored text', async () => {
     const app = buildApp();
     await bootstrapUser(app);
 
     const res = await request(app)
       .post('/v1/me/prompts')
       .set('Authorization', 'Bearer valid-token')
-      .send({ promptId: 'prompt-tradition', text: 'Coffee', state: 'rejected', publishedRevision: 9, ownerId: 'x' });
+      .send({
+        promptId: 'prompt-tradition', text: 'Coffee', approvedText: 'Sneaky', state: 'rejected',
+        revision: 7, publishedRevision: 9, contentVersion: 9, ownerId: 'x', slot: 2,
+      });
 
     expect(res.status).toBe(201);
-    expect(res.body.data.state).toBe('pending');
-    expect(res.body.data.revision).toBe(1);
+    expect(res.body.data).toMatchObject({ text: 'Coffee', revision: 1, contentVersion: 1 });
+    expect(res.body.data).not.toHaveProperty('state');
+    const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer valid-token');
+    expect(own.body.data.promptAnswers).toEqual([res.body.data]);
   });
 });
 
@@ -783,11 +795,11 @@ describe('toPublicProfileDTO', () => {
   };
 
   const answers: PromptAnswerDocument[] = [
-    { _id: 'a3', ownerId: 'u1', promptId: 'prompt-sunday', slot: 2, approvedText: 'Church, then brunch', pendingText: null, state: 'approved', revision: 3, publishedRevision: 3, createdAt: new Date(), updatedAt: new Date() },
-    { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', slot: 0, approvedText: 'Buna', pendingText: 'Pending replacement', state: 'pending', revision: 2, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
-    { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', slot: 1, approvedText: null, pendingText: 'Pending answer', state: 'pending', revision: 1, publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
-    { _id: 'a4', ownerId: 'u1', promptId: 'prompt-dream', slot: 1, approvedText: null, pendingText: 'Rejected answer', state: 'rejected', revision: 1, publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() },
-    { _id: 'other-owner-answer', ownerId: 'u2', promptId: 'prompt-home', slot: 0, approvedText: 'Not Selam', pendingText: null, state: 'approved', revision: 1, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'a3', ownerId: 'u1', promptId: 'prompt-sunday', slot: 2, approvedText: 'Church, then brunch', revision: 3, publishedRevision: 3, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', slot: 0, approvedText: 'Buna', revision: 2, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
+    { _id: 'other-owner-answer', ownerId: 'u2', promptId: 'prompt-home', slot: 0, approvedText: 'Not Selam', revision: 1, publishedRevision: 1, createdAt: new Date(), updatedAt: new Date() },
+    // A pre-D-13 document the startup migration has not reached: no published text, so never shown
+    { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', slot: 1, pendingText: 'Unmigrated submission', state: 'pending', revision: 1, publishedRevision: 0, createdAt: new Date(), updatedAt: new Date() } as unknown as PromptAnswerDocument,
   ];
 
   const photo = (id: string, order: number, state: PhotoDocument['state'], extra: Partial<PhotoDocument> = {}): PhotoDocument => ({
@@ -879,84 +891,81 @@ describe('toPublicProfileDTO', () => {
     expect(dto.occupation).toBe('Nurse');
   });
 
-  it('only publishes approved prompt text, never pending replacements', () => {
+  it('shows the owner\'s published answers only, never another owner\'s or text without a published version', () => {
     expect(dto.promptAnswers.map(a => a.id)).toEqual(['a1', 'a3']);
     expect(dto.promptAnswers[0]!.text).toBe('Buna');
-    expect(serialized).not.toContain('Pending answer');
-    expect(serialized).not.toContain('Pending replacement');
-    expect(serialized).not.toContain('Rejected answer');
     expect(serialized).not.toContain('Not Selam');
+    expect(serialized).not.toContain('Unmigrated submission');
     expect(serialized).not.toContain('pendingText');
   });
 });
 
-describe('Prompt answer review states', () => {
+describe('toSelfProfileDTO prompt answers', () => {
+  const now = new Date();
+  const user = { _id: 'u1', birthDate: '1994-05-12', profileReady: true } as UserDocument;
+  const answers: PromptAnswerDocument[] = [
+    { _id: 'a2', ownerId: 'u1', promptId: 'prompt-home', slot: 1, approvedText: 'Piazza', revision: 1, publishedRevision: 1, createdAt: now, updatedAt: now },
+    { _id: 'a1', ownerId: 'u1', promptId: 'prompt-tradition', slot: 0, approvedText: 'Buna', revision: 3, publishedRevision: 2, createdAt: now, updatedAt: now },
+  ];
+
+  it('is the public answer plus the edit revision, in slot order, and nothing else', () => {
+    const owner = toSelfProfileDTO(createEmptyProfile('u1'), user, answers).promptAnswers;
+    const shown = toPublicProfileDTO(createEmptyProfile('u1'), user, answers, []).promptAnswers;
+    expect(owner).toEqual([
+      { id: 'a1', promptId: 'prompt-tradition', promptText: 'A tradition I would love to share with you…', text: 'Buna', revision: 3, contentVersion: 2 },
+      { id: 'a2', promptId: 'prompt-home', promptText: 'A place that feels like home…', text: 'Piazza', revision: 1, contentVersion: 1 },
+    ]);
+    expect(owner.map(({ revision: _revision, ...rest }) => rest)).toEqual(shown);
+  });
+});
+
+describe('Prompt answers publish immediately (D-13)', () => {
   const auth = (r: request.Test) => r.set('Authorization', 'Bearer valid-token');
 
-  /** Stand-in for the Phase 05 review service: publish the pending text */
-  async function approve(db: Db, answerId: string) {
-    const answers = db.collection<PromptAnswerDocument>('promptAnswers');
-    const answer = (await answers.findOne({ _id: answerId }))!;
-    await answers.updateOne({ _id: answerId }, {
-      $set: { approvedText: answer.pendingText, pendingText: null, state: 'approved', publishedRevision: answer.publishedRevision + 1 },
-    });
-  }
-
-  it('holds a new answer as pending: visible to the owner, absent from the public preview', async () => {
+  it('shows a new answer to the owner and in the public preview at once, at content version 1', async () => {
     const app = buildApp();
     await bootstrapUser(app);
 
     const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
     expect(created.status).toBe(201);
-    expect(created.body.data.state).toBe('pending');
+    expect(created.body.data).toMatchObject({ text: 'Buna', revision: 1, contentVersion: 1 });
 
     const own = await auth(request(app).get('/v1/me/profile'));
-    expect(own.body.data.promptAnswers).toEqual([
-      expect.objectContaining({ id: created.body.data.id, approvedText: null, pendingText: 'Buna', state: 'pending', revision: 1 }),
+    expect(own.body.data.promptAnswers).toEqual([created.body.data]);
+
+    const preview = await auth(request(app).get('/v1/me/profile/preview'));
+    expect(preview.body.data.promptAnswers).toEqual([
+      { id: created.body.data.id, promptId: 'prompt-tradition', promptText: created.body.data.promptText, text: 'Buna', contentVersion: 1 },
     ]);
-
-    const preview = await auth(request(app).get('/v1/me/profile/preview'));
-    expect(preview.body.data.promptAnswers).toEqual([]);
   });
 
-  it('keeps approved text published while an edit waits for review', async () => {
-    const db = createInMemoryDb();
-    const app = buildApp(undefined, db);
-    await bootstrapUser(app);
-
-    const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
-    await approve(db, created.body.data.id);
-
-    const edit = await auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`))
-      .send({ expectedRevision: 1, text: '  Coffee   ceremony  ' });
-    expect(edit.status).toBe(200);
-    expect(edit.body.data).toEqual({ id: created.body.data.id, state: 'pending', revision: 2 });
-
-    const preview = await auth(request(app).get('/v1/me/profile/preview'));
-    expect(preview.body.data.promptAnswers.map((a: { text: string }) => a.text)).toEqual(['Buna']);
-
-    const own = await auth(request(app).get('/v1/me/profile'));
-    expect(own.body.data.promptAnswers[0]).toMatchObject({ approvedText: 'Buna', pendingText: 'Coffee ceremony', state: 'pending' });
-  });
-
-  it('exposes the published revision as contentVersion and bumps it only when a new revision is published', async () => {
+  it('replaces the published text on edit and bumps the content version', async () => {
     const db = createInMemoryDb();
     const app = buildApp(undefined, db);
     await bootstrapUser(app);
     const published = async () => (await auth(request(app).get('/v1/me/profile/preview'))).body.data.promptAnswers;
 
     const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
-    await approve(db, created.body.data.id);
-    expect(await published()).toEqual([expect.objectContaining({ text: 'Buna', contentVersion: 1 })]);
+    const edit = await auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`))
+      .send({ expectedRevision: 1, text: '  Coffee   ceremony  ' });
+    expect(edit.status).toBe(200);
+    expect(edit.body.data).toEqual({ ...created.body.data, text: 'Coffee ceremony', revision: 2, contentVersion: 2 });
 
-    // An edit awaiting review changes neither the text nor the version others can like
-    await auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`)).send({ expectedRevision: 1, text: 'Three rounds' });
-    expect(await published()).toEqual([expect.objectContaining({ text: 'Buna', contentVersion: 1 })]);
-
-    await approve(db, created.body.data.id);
+    expect(await published()).toEqual([expect.objectContaining({ text: 'Coffee ceremony', contentVersion: 2 })]);
+    const own = await auth(request(app).get('/v1/me/profile'));
+    expect(own.body.data.promptAnswers).toEqual([edit.body.data]);
     const stored = await db.collection<PromptAnswerDocument>('promptAnswers').findOne({ _id: created.body.data.id });
-    expect(await published()).toEqual([expect.objectContaining({ text: 'Three rounds', contentVersion: 2 })]);
-    expect(stored!.publishedRevision).toBe(2);
+    expect(stored).toMatchObject({ approvedText: 'Coffee ceremony', revision: 2, publishedRevision: 2 });
+  });
+
+  it('keeps the content version when an edit saves the same words', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
+
+    const same = await auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`)).send({ expectedRevision: 1, text: ' Buna ' });
+    expect(same.status).toBe(200);
+    expect(same.body.data).toMatchObject({ text: 'Buna', revision: 2, contentVersion: 1 });
   });
 
   it('requires expectedRevision on answer edits and rejects stale ones', async () => {
@@ -973,6 +982,22 @@ describe('Prompt answer review states', () => {
     expect(stale.status).toBe(409);
     expect(stale.body.error.code).toBe('REVISION_CONFLICT');
     expect(stale.body.error.currentRevision).toBe(2);
+
+    const preview = await auth(request(app).get('/v1/me/profile/preview'));
+    expect(preview.body.data.promptAnswers).toEqual([expect.objectContaining({ text: 'Phone', contentVersion: 2 })]);
+  });
+
+  it('lets only one of two concurrent edits on the same revision win', async () => {
+    const app = buildApp();
+    await bootstrapUser(app);
+    const created = await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
+
+    const results = await Promise.all(['Phone', 'Tablet'].map(text =>
+      auth(request(app).patch(`/v1/me/prompts/${created.body.data.id}`)).send({ expectedRevision: 1, text })));
+    expect(results.map(r => r.status).sort()).toEqual([200, 409]);
+    const winner = results.find(r => r.status === 200)!;
+    const preview = await auth(request(app).get('/v1/me/profile/preview'));
+    expect(preview.body.data.promptAnswers).toEqual([expect.objectContaining({ text: winner.body.data.text, contentVersion: 2 })]);
   });
 
   it('validates edited answer text with the same grapheme limit', async () => {
@@ -1000,25 +1025,28 @@ describe('Prompt answer review states', () => {
     expect(res.status).toBe(404);
 
     const own = await request(app).get('/v1/me/profile').set('Authorization', 'Bearer token-alice');
-    expect(own.body.data.promptAnswers[0].pendingText).toBe('Buna');
+    expect(own.body.data.promptAnswers[0]).toMatchObject({ text: 'Buna', revision: 1, contentVersion: 1 });
   });
 
-  it('counts only published answers toward readiness', async () => {
-    const db = createInMemoryDb();
-    const app = buildApp(undefined, db);
+  it('counts answers toward readiness as soon as they are saved, and stops counting removed ones', async () => {
+    const app = buildApp();
     await bootstrapUser(app);
 
     const ids: string[] = [];
-    for (const promptId of ['prompt-tradition', 'prompt-home', 'prompt-sunday']) {
+    for (const promptId of ['prompt-tradition', 'prompt-home']) {
       const res = await auth(request(app).post('/v1/me/prompts')).send({ promptId, text: 'Answer' });
       ids.push(res.body.data.id);
     }
     let me = await auth(request(app).get('/v1/me'));
     expect(me.body.data.readiness.missing).toContain('promptAnswers');
 
-    for (const id of ids) await approve(db, id);
+    await auth(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-sunday', text: 'Answer' });
     me = await auth(request(app).get('/v1/me'));
     expect(me.body.data.readiness.missing).not.toContain('promptAnswers');
+
+    await auth(request(app).delete(`/v1/me/prompts/${ids[0]}`));
+    me = await auth(request(app).get('/v1/me'));
+    expect(me.body.data.readiness.missing).toContain('promptAnswers');
   });
 });
 

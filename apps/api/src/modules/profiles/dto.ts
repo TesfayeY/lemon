@@ -7,8 +7,7 @@
  * - raw coordinates, device tokens
  * - private preferences, hidden optional fields
  * - storage keys, or photos that are not approved
- * - prompt text that is not published (pending or rejected submissions)
- * - unreviewed free text (the gender self-description stays owner-only)
+ * - the gender self-description (owner-only; a separate open question)
  *
  * The public projection is the single source of truth for what other people
  * see: `GET /v1/profiles/:id`, the owner's preview and every Discover card use it.
@@ -21,7 +20,6 @@ import { calculateAge } from '../auth/adult-gate.js';
 import { findCity, findGender, findIntention, findPrompt } from '../catalogs/data.js';
 import { toPublicPhotoDTO, type PublicPhotoDTO } from '../media/dto.js';
 import { MAX_PHOTOS, PhotoState, type PhotoDocument } from '../media/schema.js';
-import { describePromptRejection, type PromptRejectionDTO } from './prompt-review.js';
 
 /** What the owner sees about their own profile */
 export interface SelfProfileDTO {
@@ -90,17 +88,19 @@ export interface PromptAnswerDTO {
   contentVersion: number;
 }
 
-/** The owner's view of an answer, including any submission awaiting review */
+/**
+ * The owner's view of an answer. Answers publish on save (D-13), so `text`
+ * and `contentVersion` are exactly what other users see.
+ */
 export interface SelfPromptAnswerDTO {
   id: string;
   promptId: string;
   promptText: string;
-  approvedText: string | null;
-  pendingText: string | null;
-  state: PromptAnswerDocument['state'];
+  text: string;
+  /** Owner edit revision; send it back as `expectedRevision` when editing */
   revision: number;
-  /** Owner-only: why the latest submission was rejected, with a replace action; null unless rejected */
-  rejectionReason: PromptRejectionDTO | null;
+  /** Version of the published text (`publishedRevision`), as in PromptAnswerDTO */
+  contentVersion: number;
 }
 
 export function toSelfProfileDTO(
@@ -132,7 +132,7 @@ export function toSelfProfileDTO(
     languagesDisplay: profile.languagesDisplay,
     religion: profile.religion,
     religionDisplay: profile.religionDisplay,
-    promptAnswers: answers.map(toSelfPromptAnswerDTO),
+    promptAnswers: [...answers].sort(bySlot).map(toSelfPromptAnswerDTO),
     revision: profile.revision,
     profileReady: user.profileReady,
   };
@@ -170,9 +170,9 @@ export function toPublicProfileDTO(
     languages: profile.languagesDisplay === 'public' ? profile.languages : [],
     religion: profile.religionDisplay === 'public' ? profile.religion : null,
     promptAnswers: answers
-      .filter(a => a.ownerId === profile.userId && a.approvedText !== null)
+      .filter(a => a.ownerId === profile.userId && typeof a.approvedText === 'string')
       .sort(bySlot)
-      .map(a => toPromptAnswerDTO(a, a.approvedText!)),
+      .map(toPromptAnswerDTO),
     photos: photos
       .filter(p => p.ownerId === profile.userId && p.state === PhotoState.APPROVED)
       .sort((a, b) => a.order - b.order)
@@ -187,28 +187,21 @@ function bySlot(a: PromptAnswerDocument, b: PromptAnswerDocument): number {
     || a.createdAt.getTime() - b.createdAt.getTime();
 }
 
-function toPromptAnswerDTO(answer: PromptAnswerDocument, text: string): PromptAnswerDTO {
+function toPromptAnswerDTO(answer: PromptAnswerDocument): PromptAnswerDTO {
   return {
     id: answer._id,
     promptId: answer.promptId,
     promptText: findPrompt(answer.promptId)?.text ?? '',
-    text,
+    text: answer.approvedText,
     // The likes service compares a prompt like's contentVersion with this value
     contentVersion: answer.publishedRevision,
   };
 }
 
-function toSelfPromptAnswerDTO(answer: PromptAnswerDocument): SelfPromptAnswerDTO {
-  return {
-    id: answer._id,
-    promptId: answer.promptId,
-    promptText: findPrompt(answer.promptId)?.text ?? '',
-    approvedText: answer.approvedText,
-    pendingText: answer.pendingText,
-    state: answer.state,
-    revision: answer.revision,
-    rejectionReason: answer.state === 'rejected' ? describePromptRejection(answer.rejectionReason) : null,
-  };
+/** Explicit allowlist: the public answer plus the owner's edit revision */
+export function toSelfPromptAnswerDTO(answer: PromptAnswerDocument): SelfPromptAnswerDTO {
+  const { id, promptId, promptText, text, contentVersion } = toPromptAnswerDTO(answer);
+  return { id, promptId, promptText, text, revision: answer.revision, contentVersion };
 }
 
 /**
@@ -222,7 +215,7 @@ export async function loadPublicProfiles(db: Db, userIds: readonly string[]): Pr
   const [userDocs, profileDocs, answerDocs, photoDocs] = await Promise.all([
     db.collection<UserDocument>('users').find({ _id: { $in: ids } }).toArray(),
     db.collection<ProfileDocument>('profiles').find({ userId: { $in: ids } }).toArray(),
-    db.collection<PromptAnswerDocument>('promptAnswers').find({ ownerId: { $in: ids }, approvedText: { $ne: null } }).toArray(),
+    db.collection<PromptAnswerDocument>('promptAnswers').find({ ownerId: { $in: ids } }).toArray(),
     db.collection<PhotoDocument>('photos').find({ ownerId: { $in: ids }, state: PhotoState.APPROVED }).toArray(),
   ]);
   const userById = new Map(userDocs.map(u => [u._id, u]));

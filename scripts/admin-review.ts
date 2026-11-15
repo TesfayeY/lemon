@@ -12,14 +12,13 @@
  *   npx tsx ../../scripts/admin-review.ts photo <id> [--save <file.webp>]
  *   npx tsx ../../scripts/admin-review.ts approve-photo <id> [--note <text>]
  *   npx tsx ../../scripts/admin-review.ts reject-photo <id> --reason <code> [--note <text>]
- *   npx tsx ../../scripts/admin-review.ts prompts [--cursor <c>]
- *   npx tsx ../../scripts/admin-review.ts prompt <id>
- *   npx tsx ../../scripts/admin-review.ts approve-prompt <id> --revision <n> [--note <text>]
- *   npx tsx ../../scripts/admin-review.ts reject-prompt <id> --revision <n> --reason <code> [--note <text>]
  *   npx tsx ../../scripts/admin-review.ts user <id>
  *   npx tsx ../../scripts/admin-review.ts suspend <id> --reason <code> [--note <text>]
  *   npx tsx ../../scripts/admin-review.ts restore <id> --reason <code> [--note <text>]
  *   npx tsx ../../scripts/admin-review.ts audit <photo|promptAnswer|user> <id>
+ *
+ * Prompt answers publish on save (D-13), so there is no prompt queue;
+ * `audit promptAnswer <id>` still shows decisions made before that.
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -108,18 +107,6 @@ async function main() {
       break;
     case 'reject-photo':
       await call('POST', `/v1/admin/content/photos/${need(arg1, 'photo id')}/review`, { decision: 'reject', reason: required(rest, 'reason'), note });
-      break;
-    case 'prompts': await page('/v1/admin/content/prompt-answers'); break;
-    case 'prompt': await call('GET', `/v1/admin/content/prompt-answers/${need(arg1, 'answer id')}`); break;
-    case 'approve-prompt':
-      await call('POST', `/v1/admin/content/prompt-answers/${need(arg1, 'answer id')}/review`, {
-        decision: 'approve', expectedRevision: Number(required(rest, 'revision')), note,
-      });
-      break;
-    case 'reject-prompt':
-      await call('POST', `/v1/admin/content/prompt-answers/${need(arg1, 'answer id')}/review`, {
-        decision: 'reject', reason: required(rest, 'reason'), expectedRevision: Number(required(rest, 'revision')), note,
-      });
       break;
     case 'user': await call('GET', `/v1/admin/users/${need(arg1, 'user id')}`); break;
     case 'suspend':
