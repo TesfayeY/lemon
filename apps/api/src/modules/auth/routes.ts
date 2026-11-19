@@ -1,9 +1,10 @@
 import { Router, type Request, type Response } from 'express';
-import type { Db } from 'mongodb';
+import type { Db, Filter } from 'mongodb';
 import type { Auth } from 'firebase-admin/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { createAuthMiddleware, type AuthenticatedRequest } from './middleware.js';
 import { createNewUser, canAuthenticate, type UserDocument } from './account.js';
+import { loadOwnAccount } from './load-account.js';
 import { parseBirthDate, isAdultEligible } from './adult-gate.js';
 import { evaluateReadiness, recomputeReadiness } from '../profiles/readiness-service.js';
 
@@ -94,29 +95,9 @@ export function createAuthRoutes(db: Db, auth: Auth) {
    * Private own-account snapshot including readiness and next onboarding step.
    */
   router.get('/v1/me', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-
-    // Not bootstrapped yet: same answer as every other own-resource route
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
-
-    if (!canAuthenticate(user.accountStatus)) {
-      res.status(403).json({
-        error: {
-          code: 'ACCOUNT_RESTRICTED',
-          message: 'This account is not available',
-          retryable: false,
-        },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    // Not bootstrapped yet (404) or restricted (403): same answers as every other own-resource route
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     res.json({
       data: {
@@ -135,22 +116,43 @@ export function createAuthRoutes(db: Db, auth: Auth) {
     });
   });
 
+  function sendAgeIneligible(req: Request, res: Response) {
+    res.status(422).json({
+      error: {
+        code: 'AGE_INELIGIBLE',
+        message: 'You must be at least 18 years old to use Lemon',
+        retryable: false,
+      },
+      requestId: req.requestId,
+    });
+  }
+
+  /**
+   * Record that an under-18 birth date was refused, so a person can't retry
+   * with an earlier year. Only the fact and its time are kept, never the date.
+   * Any birth date saved earlier is cleared: it can no longer be trusted, and
+   * the account must not stay adult-eligible. There is no self-service unlock;
+   * date changes go through support (spec §4.1).
+   */
+  async function lockAgeGate(userId: string): Promise<void> {
+    const now = new Date();
+    await users.updateOne(
+      { _id: userId, ageGate: null },
+      { $set: { ageGate: { blockedAt: now }, birthDate: null, adultEligible: false, updatedAt: now } },
+    );
+    await recomputeReadiness(db, userId, { eligibilityChanged: true });
+  }
+
   /**
    * PATCH /v1/me/onboarding
-   * Validates and saves one onboarding step at a time.
-   * Currently supports: birthDate
+   * Validates and saves one onboarding step at a time: birthDate and/or
+   * termsAccepted. A refused field saves nothing from the request. An under-18
+   * birth date locks the age gate: that and every later birth date get 422
+   * AGE_INELIGIBLE.
    */
   router.patch('/v1/me/onboarding', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     if (user.accountStatus !== 'onboarding') {
       res.status(409).json({
@@ -165,6 +167,12 @@ export function createAuthRoutes(db: Db, auth: Auth) {
 
     // Handle birthDate step
     if (body['birthDate'] !== undefined) {
+      // Locked by an earlier under-18 date: refuse any date, valid or not, the same way
+      if (user.ageGate) {
+        sendAgeIneligible(req, res);
+        return;
+      }
+
       if (typeof body['birthDate'] !== 'string') {
         res.status(422).json({
           error: {
@@ -194,14 +202,9 @@ export function createAuthRoutes(db: Db, auth: Auth) {
 
       const eligible = isAdultEligible(result.date);
       if (!eligible) {
-        res.status(422).json({
-          error: {
-            code: 'AGE_INELIGIBLE',
-            message: 'You must be at least 18 years old to use Lemon',
-            retryable: false,
-          },
-          requestId: req.requestId,
-        });
+        // Nothing else in this request (e.g. termsAccepted) is saved
+        await lockAgeGate(user._id);
+        sendAgeIneligible(req, res);
         return;
       }
 
@@ -239,7 +242,23 @@ export function createAuthRoutes(db: Db, auth: Auth) {
 
     updates['updatedAt'] = new Date();
 
-    await users.updateOne({ _id: user._id }, { $set: updates });
+    // Save only while still onboarding, and a birth date only while the age gate
+    // is open: a concurrent under-18 submission that locked it must win
+    const filter: Filter<UserDocument> = { _id: user._id, accountStatus: 'onboarding' };
+    if ('birthDate' in updates) filter.ageGate = null;
+    const saved = await users.updateOne(filter, { $set: updates });
+    if (saved.matchedCount === 0) {
+      const current = await users.findOne({ _id: user._id });
+      if (current?.ageGate && 'birthDate' in updates) {
+        sendAgeIneligible(req, res);
+      } else {
+        res.status(409).json({
+          error: { code: 'INVALID_STATE', message: 'Not in onboarding', retryable: false },
+          requestId: req.requestId,
+        });
+      }
+      return;
+    }
     // Birth date and terms are readiness inputs; a birth date also changes who can see whom
     await recomputeReadiness(db, user._id, { eligibilityChanged: 'birthDate' in updates });
 

@@ -699,6 +699,48 @@ describe('Own-resource authorization', () => {
     expect(own.body.data.promptAnswers).toHaveLength(1);
   });
 
+  it.each(['suspended', 'deletion_pending', 'deleted'] as const)(
+    'answers 403 ACCOUNT_RESTRICTED on every own profile, prompt and preference route for a %s account, and saves nothing',
+    async (status) => {
+      const db = createInMemoryDb();
+      const app = buildApp(createMultiUserAuth(), db);
+      const as = (req: request.Test) => req.set('Authorization', 'Bearer token-alice');
+      await as(request(app).post('/v1/me/bootstrap'));
+      const created = await as(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-tradition', text: 'Buna' });
+      const answerId = created.body.data.id as string;
+      await as(request(app).get('/v1/me/profile'));
+      await as(request(app).get('/v1/me/preferences'));
+
+      const users = db.collection<UserDocument>('users');
+      await users.updateOne({ firebaseUid: 'uid-alice' }, { $set: { accountStatus: status } });
+      const before = structuredClone((await users.findOne({ firebaseUid: 'uid-alice' }))!);
+
+      const attempts = [
+        as(request(app).get('/v1/me/profile')),
+        as(request(app).patch('/v1/me/profile')).send({ expectedRevision: 1, displayName: 'Selam', cityId: 'city-seattle-wa' }),
+        as(request(app).get('/v1/me/profile/preview')),
+        as(request(app).post('/v1/me/prompts')).send({ promptId: 'prompt-home', text: 'Addis' }),
+        as(request(app).patch(`/v1/me/prompts/${answerId}`)).send({ expectedRevision: 1, text: 'Edited' }),
+        as(request(app).delete(`/v1/me/prompts/${answerId}`)),
+        as(request(app).get('/v1/me/preferences')),
+        as(request(app).patch('/v1/me/preferences')).send({ expectedRevision: 1, acceptedGenderCategories: ['man'] }),
+        as(request(app).patch('/v1/me/onboarding')).send({ termsAccepted: true }),
+      ];
+      for (const res of await Promise.all(attempts)) {
+        expect(res.status, `${res.req.method} ${res.req.path}`).toBe(403);
+        expect(res.body.error).toEqual({ code: 'ACCOUNT_RESTRICTED', message: 'This account is not available', retryable: false });
+      }
+
+      const profile = await db.collection<ProfileDocument>('profiles').findOne({ userId: before._id });
+      expect(profile).toMatchObject({ displayName: null, revision: 1 });
+      const answers = await db.collection<PromptAnswerDocument>('promptAnswers').find({ ownerId: before._id }).toArray();
+      expect(answers).toEqual([expect.objectContaining({ _id: answerId, pendingText: 'Buna', revision: 1 })]);
+      const prefs = await db.collection('preferences').findOne({ userId: before._id });
+      expect(prefs).toMatchObject({ acceptedGenderCategories: [], revision: 1 });
+      expect(await users.findOne({ firebaseUid: 'uid-alice' })).toEqual(before);
+    },
+  );
+
   it('blocks viewers who are not active and ready from viewing profiles', async () => {
     const app = buildApp(createMultiUserAuth());
     await request(app).post('/v1/me/bootstrap').set('Authorization', 'Bearer token-alice');

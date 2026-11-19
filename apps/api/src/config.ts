@@ -54,5 +54,24 @@ export function loadConfig(): Env {
     }
   }
 
+  assertNoEmulatorsInProduction(config);
+
   return config;
+}
+
+const EMULATOR_HOST_VARS = ['FIREBASE_AUTH_EMULATOR_HOST', 'FIRESTORE_EMULATOR_HOST'] as const;
+
+/**
+ * Refuse to start production with Firebase emulator settings. With
+ * FIREBASE_AUTH_EMULATOR_HOST set, firebase-admin accepts unsigned emulator ID
+ * tokens, so anyone could sign in as anyone. Any value counts as set, even an
+ * empty one: the fix is to remove the variable.
+ */
+function assertNoEmulatorsInProduction(config: Env): void {
+  if (config.NODE_ENV !== 'production') return;
+  const present = EMULATOR_HOST_VARS.filter((name) => config[name] !== undefined);
+  if (present.length > 0) {
+    // ConfigError: the message names variables only, so startup logs it in full
+    throw new ConfigError(`Firebase emulator settings are not allowed in production. Unset: ${present.join(', ')}`);
+  }
 }

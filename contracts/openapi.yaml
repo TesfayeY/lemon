@@ -68,6 +68,17 @@ paths:
   /v1/me/onboarding:
     patch:
       summary: Save birth date and/or terms acceptance
+      description: |
+        Only while `accountStatus` is `onboarding`. A refused field saves
+        nothing from the request (a refused birth date also discards
+        `termsAccepted`).
+
+        An under-18 birth date locks the age gate: the server records that a
+        date was refused (never the date itself), clears any birth date saved
+        earlier, and answers that and every later `birthDate` submission,
+        valid or not, with 422 `AGE_INELIGIBLE`. There is no self-service
+        unlock; date changes go through support (specification §4.1).
+        `termsAccepted` on its own is still accepted.
       requestBody:
         required: true
         content:
@@ -89,8 +100,20 @@ paths:
               schema: { $ref: '#/components/schemas/UpdatedResponse' }
         '400': { $ref: '#/components/responses/NoUpdates' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
+        '409':
+          description: '`INVALID_STATE`: the account is no longer onboarding'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: |
+            `VALIDATION_ERROR` (malformed or future date, `termsAccepted` not
+            `true`) or `AGE_INELIGIBLE` (under 18, or any birth date once the
+            age gate is locked). Nothing from the request is saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /v1/catalogs:
     get:
@@ -125,6 +148,7 @@ paths:
                   data: { $ref: '#/components/schemas/SelfProfile' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       summary: Edit own profile draft fields
@@ -144,6 +168,7 @@ paths:
               schema: { $ref: '#/components/schemas/RevisionedUpdateResponse' }
         '400': { $ref: '#/components/responses/NoUpdates' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
@@ -158,6 +183,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PublicProfileResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /v1/me/prompts:
@@ -194,6 +220,7 @@ paths:
                       revision: { type: integer, minimum: 1 }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
@@ -236,6 +263,7 @@ paths:
                       revision: { type: integer, minimum: 1 }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
@@ -259,6 +287,7 @@ paths:
                       deleted: { const: true }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /v1/me/preferences:
@@ -277,6 +306,7 @@ paths:
                   data: { $ref: '#/components/schemas/Preferences' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       summary: Edit dating preferences
@@ -293,6 +323,7 @@ paths:
               schema: { $ref: '#/components/schemas/RevisionedUpdateResponse' }
         '400': { $ref: '#/components/responses/NoUpdates' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
@@ -865,6 +896,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+    AccountRestricted:
+      description: '`ACCOUNT_RESTRICTED`: the account is suspended, being deleted or deleted'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
     NotFound:
       description: Resource not found or not owned by the caller
       content:
@@ -973,7 +1009,8 @@ components:
           fix the request instead. A missing body is treated as `{}`.
         - Accounts: 403 `ACCOUNT_RESTRICTED` (suspended or being deleted),
           `ACCOUNT_NOT_ELIGIBLE` (not active and profile-ready); 422
-          `AGE_INELIGIBLE` (under 18); 409 `INVALID_STATE` (onboarding step
+          `AGE_INELIGIBLE` (under 18; after one refused under-18 date, every
+          later birth date); 409 `INVALID_STATE` (onboarding step
           after onboarding ended); 400 `NO_UPDATES` (no editable field sent).
         - Profiles and prompts: 422 `VALIDATION_ERROR`, `PROMPT_LIMIT` (three
           answers already); 409 `REVISION_CONFLICT` (with `currentRevision`),
