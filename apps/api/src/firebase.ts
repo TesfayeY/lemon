@@ -4,8 +4,11 @@ import { getFirestore } from 'firebase-admin/firestore';
 import type { Env } from './config.js';
 
 let app: App | null = null;
+let configuredProjectId: string | null = null;
 
 export function initFirebase(config: Env): App {
+  configuredProjectId = config.FIREBASE_PROJECT_ID;
+
   if (getApps().length > 0) {
     app = getApps()[0]!;
     return app;
@@ -19,14 +22,18 @@ export function initFirebase(config: Env): App {
   return app;
 }
 
+/**
+ * Readiness: the Admin SDK is initialized for the configured project.
+ *
+ * Deliberately local. `/ready` needs no sign-in, so it must not call the Admin
+ * API on every request (that spends quota and needs service-account
+ * credentials, while ID-token verification works with the project ID alone).
+ */
 export async function checkFirebase(): Promise<boolean> {
+  if (!app || !configuredProjectId) return false;
   try {
-    // Simple check: verify the app is initialized
-    if (!app) return false;
-    const auth = getAuth(app);
-    // Try listing (0 results) to verify emulator connection
-    await auth.listUsers(1);
-    return true;
+    getAuth(app);
+    return app.options.projectId === configuredProjectId;
   } catch {
     return false;
   }
