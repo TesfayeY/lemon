@@ -3,6 +3,9 @@
  *
  * - A session is a bounded, shuffled snapshot of mutually eligible candidate
  *   IDs, tied to the viewer's preferences revision and residence city.
+ * - Building one leaves out people the viewer's likes and passes hide, and
+ *   accounts that can't be shown, before the scan budget applies; a pool
+ *   larger than the budget is sampled per session seed.
  * - Every page rechecks each scanned candidate (eligibility, likes, passes and
  *   pair exclusions). The cursor's offset is the next unscanned position, so
  *   candidates that dropped out are skipped without repeating or skipping others.
@@ -10,9 +13,9 @@
  */
 
 import { randomInt } from 'node:crypto';
-import type { Collection, Db, Filter } from 'mongodb';
+import type { Collection, Db, Document, Filter } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
-import { canInteract, type UserDocument } from '../auth/account.js';
+import { AccountStatus, canInteract, type UserDocument } from '../auth/account.js';
 import type { ProfileDocument } from '../profiles/schema.js';
 import type { PreferencesDocument } from '../preferences/schema.js';
 import { loadPublicProfiles, type PublicProfileDTO } from '../profiles/dto.js';
@@ -39,7 +42,10 @@ export const DISCOVERY_DEFAULTS = {
   maxScanPerPage: 50,
   /** Candidate IDs kept in one session. */
   maxSessionSize: 200,
-  /** Profiles read from the index pre-filter when building a session. */
+  /**
+   * Showable, not-yet-acted-on profiles read from the pre-filter when building
+   * a session. Larger pools are sampled per session (see `candidatePoolPipeline`).
+   */
   poolScanLimit: 2000,
   /** Batch size for `$in` lookups while building a session. */
   poolBatchSize: 500,
@@ -161,6 +167,62 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
+/** Statuses Discover can show, derived from `canInteract` so the pool pre-filter never drifts from eligibility. */
+const SHOWABLE_STATUSES = Object.values(AccountStatus).filter(canInteract);
+
+/** Incoming like states that hide the sender: pending (shown in Likes instead) and declined (terminal). */
+const HIDING_INCOMING_LIKE_STATES: LikeView['state'][] = ['pending', 'declined'];
+
+/** Likes the viewer sent, in any state. */
+const outgoingLikes = (viewerId: string): Filter<LikeView> => ({ fromUserId: viewerId });
+/** Likes to the viewer that hide their sender. */
+const hidingIncomingLikes = (viewerId: string): Filter<LikeView> => ({
+  toUserId: viewerId,
+  state: { $in: HIDING_INCOMING_LIKE_STATES },
+});
+/** Passes still in their cooldown. TTL deletion lags, so `expiresAt` is always checked. */
+const activePasses = (viewerId: string, at: Date): Filter<PassDocument> => ({ viewerId, expiresAt: { $gt: at } });
+
+/**
+ * Aggregation over `profiles` that picks at most `size` candidate IDs for a new session.
+ *
+ * 1. `viewerFilter` (gender, scope, US) runs on the profiles indexes, minus
+ *    `hiddenIds` (the viewer and everyone their likes and passes hide).
+ * 2. A join on `users._id` drops accounts Discover never shows (not active,
+ *    not profile-ready, paused). Each condition is no stricter than
+ *    `pairBlocker`, so nobody eligible is dropped here.
+ * 3. A top-`size` by a hash of (userId, seed). When more people match than
+ *    `size`, each session reads a different subset, so nobody stays past the
+ *    cutoff; the stored seed reproduces it. When everyone fits, the result is
+ *    the whole set whatever the seed.
+ *
+ * Steps 1 and 2 run before the limit, so hidden and unshowable profiles never
+ * use the budget. The caller still runs the full mutual check on the result.
+ */
+export function candidatePoolPipeline(
+  viewerFilter: Filter<ProfileDocument>,
+  hiddenIds: readonly string[],
+  seed: number,
+  size: number,
+): Document[] {
+  return [
+    { $match: { ...viewerFilter, userId: { $nin: [...hiddenIds] } } },
+    { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'account' } },
+    {
+      $match: {
+        'account.accountStatus': { $in: SHOWABLE_STATUSES },
+        'account.profileReady': true,
+        'account.discoverPaused': { $ne: true },
+      },
+    },
+    // Same hash function as hashed indexes: uniform, and independent between seeds
+    { $project: { _id: 0, userId: 1, pick: { $toHashedIndexKey: { $concat: ['$userId', ':', String(seed)] } } } },
+    { $sort: { pick: 1, userId: 1 } },
+    { $limit: size },
+    { $project: { userId: 1 } },
+  ];
+}
+
 export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
   const config = {
     pageSize: options.pageSize ?? DISCOVERY_DEFAULTS.pageSize,
@@ -229,12 +291,12 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
     if (ids.length === 0) return new Set();
     const list = [...ids];
     const [outgoing, incoming, passed, provided] = await Promise.all([
-      likes.find({ fromUserId: viewerId, toUserId: { $in: list } }, { projection: { _id: 0, toUserId: 1 } }).toArray(),
+      likes.find({ ...outgoingLikes(viewerId), toUserId: { $in: list } }, { projection: { _id: 0, toUserId: 1 } }).toArray(),
       likes
-        .find({ fromUserId: { $in: list }, toUserId: viewerId, state: { $in: ['pending', 'declined'] } }, { projection: { _id: 0, fromUserId: 1 } })
+        .find({ ...hidingIncomingLikes(viewerId), fromUserId: { $in: list } }, { projection: { _id: 0, fromUserId: 1 } })
         .toArray(),
       passes
-        .find({ viewerId, candidateId: { $in: list }, expiresAt: { $gt: at } }, { projection: { _id: 0, candidateId: 1 } })
+        .find({ ...activePasses(viewerId, at), candidateId: { $in: list } }, { projection: { _id: 0, candidateId: 1 } })
         .toArray(),
       exclusions.excludedAmong(viewerId, list),
     ]);
@@ -244,6 +306,29 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
       ...passed.map((p) => p.candidateId),
       ...provided,
     ]);
+  }
+
+  /**
+   * Everyone the viewer's likes and passes hide, in full: the like and pass
+   * rules of `excludedByPairState`, without a candidate list. Small enough to
+   * send as one `$nin`: sent likes are capped per day, passes expire after the
+   * cooldown, and each sender has at most one like to the viewer.
+   * Provider exclusions (blocks, pairs, report hides) only answer per batch,
+   * so they are applied by `eligibleAmong` instead.
+   */
+  async function hiddenByLikesAndPasses(viewerId: string, at: Date): Promise<string[]> {
+    const [outgoing, incoming, passed] = await Promise.all([
+      likes.find(outgoingLikes(viewerId), { projection: { _id: 0, toUserId: 1 } }).toArray(),
+      likes.find(hidingIncomingLikes(viewerId), { projection: { _id: 0, fromUserId: 1 } }).toArray(),
+      passes.find(activePasses(viewerId, at), { projection: { _id: 0, candidateId: 1 } }).toArray(),
+    ]);
+    return [
+      ...new Set([
+        ...outgoing.map((l) => l.toUserId),
+        ...incoming.map((l) => l.fromUserId),
+        ...passed.map((p) => p.candidateId),
+      ]),
+    ];
   }
 
   /** The subset of `ids` the viewer may see right now, every rule rechecked. */
@@ -261,21 +346,25 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
     return eligible;
   }
 
-  /** Index-backed pre-filter on the viewer's side, then the full mutual check, then a seeded shuffle. */
+  /**
+   * Index-backed pre-filter on the viewer's side that already leaves out
+   * hidden and unshowable people, sampled per seed when it exceeds the scan
+   * budget; then the full mutual check, then a seeded shuffle.
+   */
   async function buildCandidatePool(viewer: Viewer, ctx: EligibilityContext, seed: number): Promise<string[]> {
+    const viewerId = viewer.participant.userId;
     const residence = resolveResidence(viewer.participant, catalog)!;
     const prefs = viewer.preferences;
     const metroCityIds =
       residence.metroId && catalog.metroCityIds ? catalog.metroCityIds(residence.metroId) : [residence.cityId];
-    const filter: Filter<ProfileDocument> = {
+    const viewerFilter: Filter<ProfileDocument> = {
       genderIdentity: { $in: prefs.acceptedGenderCategories },
       ...viewerScopeFilter(prefs.locationScope, residence, metroCityIds),
       countryCode: 'US' as const,
-      userId: { $ne: viewer.participant.userId },
     };
+    const hiddenIds = [viewerId, ...(await hiddenByLikesAndPasses(viewerId, ctx.now))];
     const prefiltered = await profiles
-      .find(filter, { projection: { _id: 0, userId: 1 } })
-      .limit(config.poolScanLimit)
+      .aggregate<{ userId: string }>(candidatePoolPipeline(viewerFilter, hiddenIds, seed, config.poolScanLimit))
       .toArray();
 
     const eligible: string[] = [];
@@ -283,7 +372,7 @@ export function createDiscoveryService(db: Db, options: DiscoveryOptions) {
       const ok = await eligibleAmong(viewer, batch, ctx);
       eligible.push(...batch.filter((id) => ok.has(id)));
     }
-    // Sort first so the permutation depends only on the seed, not on index order
+    // Sort first so the permutation depends only on the seed, not on read order
     eligible.sort();
     return stableShuffle(eligible, seed).slice(0, config.maxSessionSize);
   }

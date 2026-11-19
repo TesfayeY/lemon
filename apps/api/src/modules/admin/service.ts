@@ -6,13 +6,15 @@
  * entry. Two staff members deciding the same item: one commits, the other's
  * transaction re-reads the decided state and fails with a conflict, writing
  * nothing. Readiness and photo-set follow-ups run after commit through the
- * owning modules' functions (recomputeReadiness is idempotent).
+ * owning modules' functions (recomputeReadiness is idempotent). A suspension
+ * also revokes the member's Firebase refresh tokens after commit.
  *
  * Staff DTOs carry only what a reviewer needs: the item, the owner's app user
  * ID, display name and account status. Never DOB, email or Firebase UID.
  */
 
 import { createHash } from 'node:crypto';
+import type { Auth } from 'firebase-admin/auth';
 import type { ClientSession, Db, Filter, MongoClient } from 'mongodb';
 import { AccountStatus, type AccountStatusType, type UserDocument } from '../auth/account.js';
 import { findPrompt } from '../catalogs/data.js';
@@ -163,7 +165,10 @@ export interface AdminServiceDeps {
   afterAuditWrite?: (entry: AdminAuditEntry) => Promise<void>;
 }
 
-export function createAdminService(db: Db, client: MongoClient, deps: AdminServiceDeps = {}) {
+/** The one Firebase Admin capability the service needs: ending a member's sessions */
+export type SessionRevoker = Pick<Auth, 'revokeRefreshTokens'>;
+
+export function createAdminService(db: Db, client: MongoClient, auth: SessionRevoker, deps: AdminServiceDeps = {}) {
   const now = deps.now ?? (() => new Date());
 
   async function recordAudit(input: AuditInput, session: ClientSession): Promise<AdminAuditEntry> {
@@ -407,9 +412,27 @@ export function createAdminService(db: Db, client: MongoClient, deps: AdminServi
   }
 
   /**
+   * End a suspended member's Firebase sessions: revoking refresh tokens makes
+   * every ID token issued before now fail verification (the API verifies with
+   * checkRevoked), so the app has to sign in again and is then refused.
+   * MongoDB status stays authoritative and every own-account route already
+   * answers 403, so a failure here is logged (no personal data) and the
+   * suspension still succeeds.
+   */
+  async function revokeSessions(firebaseUid: string, requestId: string): Promise<void> {
+    try {
+      await auth.revokeRefreshTokens(firebaseUid);
+    } catch (err: unknown) {
+      const code = (err as { code?: unknown }).code;
+      console.error(`[${requestId}] Session revocation after suspension failed (${typeof code === 'string' ? code : 'unknown error'}); the suspension stands`);
+    }
+  }
+
+  /**
    * Suspend or restore inside one transaction: compare-and-set on the account
    * status and guardVersion read in the transaction, bump guardVersion so any
-   * concurrent guarded pair action fails, and append the audit entry.
+   * concurrent guarded pair action fails, and append the audit entry. After a
+   * suspension commits, the member's Firebase sessions are revoked.
    */
   async function changeAccountStatus(
     actor: StaffActor,
@@ -420,7 +443,7 @@ export function createAdminService(db: Db, client: MongoClient, deps: AdminServi
   ) {
     await assertNotSelf(actor, userId);
 
-    const audit = await inTransaction(async (session) => {
+    const { audit, firebaseUid } = await inTransaction(async (session) => {
       const user = await users.findOne({ _id: userId }, { session });
       if (!user) throw new AdminError(404, 'NOT_FOUND', 'Account not found');
 
@@ -461,7 +484,7 @@ export function createAdminService(db: Db, client: MongoClient, deps: AdminServi
         throw new AdminError(409, 'ACCOUNT_STATE_CONFLICT', 'The account changed during this action. Refresh and try again.', {}, true);
       }
 
-      return recordAudit({
+      const entry = await recordAudit({
         actor,
         action: `account.${kind}`,
         targetType: 'user',
@@ -474,8 +497,11 @@ export function createAdminService(db: Db, client: MongoClient, deps: AdminServi
         requestId,
         createdAt: decidedAt,
       }, session);
+      return { audit: entry, firebaseUid: user.firebaseUid };
     });
 
+    // No network calls inside the retriable transaction; restore needs none
+    if (kind === 'suspend') await revokeSessions(firebaseUid, requestId);
     // Suspension clears readiness (and so discovery/media visibility); restore re-evaluates it
     await recomputeReadiness(db, userId);
     const account = await getAccount(userId);

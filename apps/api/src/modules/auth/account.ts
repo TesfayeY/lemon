@@ -29,6 +29,14 @@ export function canAuthenticate(status: AccountStatusType): boolean {
   return (AUTHENTICATED_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * Set when an under-18 birth date was refused. Records the fact and when, never
+ * the date. Private: no DTO, public or staff, carries it.
+ */
+export interface AgeGateRecord {
+  blockedAt: Date;
+}
+
 export interface UserDocument {
   _id: string;
   firebaseUid: string;
@@ -36,6 +44,11 @@ export interface UserDocument {
   emailVerified: boolean;
   birthDate: string | null;
   adultEligible: boolean;
+  /**
+   * Absent or null: no birth date has been refused. Once set, every birth date
+   * submission is refused; date changes go through support (spec §4.1).
+   */
+  ageGate?: AgeGateRecord | null;
   discoverPaused: boolean;
   profileReady: boolean;
   guardVersion: number;
@@ -58,6 +71,7 @@ export function createNewUser(id: string, firebaseUid: string): UserDocument {
     emailVerified: false,
     birthDate: null,
     adultEligible: false,
+    ageGate: null,
     discoverPaused: false,
     profileReady: false,
     guardVersion: 1,

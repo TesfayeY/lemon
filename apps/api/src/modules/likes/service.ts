@@ -1,10 +1,12 @@
 /**
  * Like service: send, decline and list incoming likes.
  *
- * Sending runs in one MongoDB transaction: recipient, pair and target checks,
- * then the daily charge, then the insert. A rejected or rolled-back like
- * therefore charges nothing, and the unique indexes (not application reads)
- * are the final word on duplicates.
+ * Sending first requires that the sender may view the recipient right now
+ * (the same contextual access as `GET /v1/profiles/:id`), then runs one
+ * MongoDB transaction: recipient, pair and target checks, then the daily
+ * charge, then the insert. A rejected or rolled-back like therefore charges
+ * nothing, and the unique indexes (not application reads) are the final word
+ * on duplicates.
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -12,6 +14,7 @@ import type { ClientSession, Collection, Db, Filter, TransactionOptions } from '
 import { isDuplicateKeyError } from '../../indexes.js';
 import { canInteract, type UserDocument } from '../auth/account.js';
 import { findPrompt } from '../catalogs/data.js';
+import type { ProfileAccess } from '../profiles/routes.js';
 import type { PromptAnswerDocument } from '../profiles/schema.js';
 import { PhotoState, type PhotoDocument } from '../media/schema.js';
 import type { PairGuard } from './pair-guard.js';
@@ -26,6 +29,8 @@ export interface LikeServiceDeps {
   db: Db;
   policy: QuotaPolicy;
   pairGuard: PairGuard;
+  /** Whether the sender may view the recipient right now; the same check as `GET /v1/profiles/:id` */
+  profileAccess: ProfileAccess;
   now: () => Date;
 }
 
@@ -151,13 +156,14 @@ export async function sendLike(
   input: SendLikeInput,
   idempotencyKey: string,
 ): Promise<SendLikeOutcome> {
-  const { db, policy, pairGuard } = deps;
+  const { db, policy, pairGuard, profileAccess } = deps;
   const { users, likes, quotas } = collections(db);
   const fromUserId = sender._id;
   const toUserId = input.toUserId;
   const now = deps.now();
 
-  // A retry returns the original outcome, whatever changed since
+  // A retry returns the original outcome, whatever changed since, including
+  // the sender's access to the recipient (which liking itself ends, D-11)
   const replay = async (like: LikeDocument): Promise<SendLikeOutcome> => {
     if (!samePayload(like, input)) {
       throw new LikeError(409, 'IDEMPOTENCY_KEY_REUSED', 'This Idempotency-Key was already used for a different like.');
@@ -170,6 +176,21 @@ export async function sendLike(
 
   assertCanSend(sender);
   if (toUserId === fromUserId) throw new LikeError(422, 'SELF_LIKE', 'You cannot like your own profile');
+
+  // You can only like someone whose profile you may view right now: mutually
+  // eligible in Discover, or with a pending like to you (shown in Likes). Any
+  // refusal looks exactly like every other unavailable profile and charges
+  // nothing, so a sender can't reach people who could never see them.
+  // The discovery service reads outside the transaction below (it takes no
+  // session), so access lost in the instant before the commit can still race
+  // a like. The transaction rechecks the recipient's account and pair state.
+  if (!(await profileAccess.canViewProfile(sender, toUserId))) {
+    // A concurrent retry with this key may have committed since the lookup
+    // above, and that like itself ends access: answer with the replay
+    const raced = await likes.findOne({ fromUserId, idempotencyKey });
+    if (raced) return replay(raced);
+    throw profileUnavailable();
+  }
 
   const session = db.client.startSession();
   let result: { like: LikeDocument; quota?: QuotaStatus };

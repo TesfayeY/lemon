@@ -1,4 +1,5 @@
-import { loadConfig } from './config.js';
+import { ConfigError, loadConfig } from './config.js';
+import { describeError } from './logging.js';
 import { createApp } from './app.js';
 import { connectDb, checkMongo } from './db.js';
 import { initFirebase, checkFirebase, getAuth } from './firebase.js';
@@ -48,7 +49,7 @@ async function main() {
       createCatalogRoutes(),
       createMediaRoutes(db, auth, config, { profileAccess: discovery }),
       createDiscoveryRoutes(db, auth, config, {}, discovery),
-      createLikesRoutes(db, auth, config),
+      createLikesRoutes(db, auth, config, { profileAccess: discovery }),
       createAdminRoutes(db, client, auth, config),
     ],
   });
@@ -58,7 +59,8 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  console.error('Failed to start server:', err.message);
+main().catch((err: unknown) => {
+  // Other startup errors can echo stored values (e.g. a duplicate key while building a unique index)
+  console.error(`Failed to start server: ${err instanceof ConfigError ? err.message : describeError(err)}`);
   process.exit(1);
 });

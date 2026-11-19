@@ -195,6 +195,11 @@ describe('Live responses match the contract', () => {
       res = await request(app).patch('/v1/me/onboarding').set('Authorization', as('alice')).send(body);
       check(res, '/v1/me/onboarding', 'patch');
     }
+    // The under-18 date locked the age gate: an adult date is now refused the same way
+    res = await request(app).patch('/v1/me/onboarding').set('Authorization', as('alice')).send({ birthDate: '1995-03-10' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('AGE_INELIGIBLE');
+    check(res, '/v1/me/onboarding', 'patch');
     await request(app).patch('/v1/me/onboarding').set('Authorization', as('bob'))
       .send({ birthDate: '1992-11-02', termsAccepted: true });
     check(await request(app).get('/v1/me').set('Authorization', as('alice')), '/v1/me', 'get');
@@ -268,5 +273,25 @@ describe('Live responses match the contract', () => {
     check(await request(app).get('/v1/me/profile/preview').set('Authorization', as('bob')), '/v1/me/profile/preview', 'get');
     check(await request(app).get(`/v1/profiles/${alice._id}`).set('Authorization', as('alice')), '/v1/profiles/{id}', 'get');
     check(await request(app).get('/v1/profiles/no-such-user').set('Authorization', as('alice')), '/v1/profiles/{id}', 'get');
+
+    // A suspended account gets 403 ACCOUNT_RESTRICTED on every own-account route
+    await users.updateOne({ _id: alice._id }, { $set: { accountStatus: 'suspended' } });
+    const restricted: [request.Test, string, string][] = [
+      [request(app).patch('/v1/me/onboarding').send({ termsAccepted: true }), '/v1/me/onboarding', 'patch'],
+      [request(app).get('/v1/me/profile'), '/v1/me/profile', 'get'],
+      [request(app).patch('/v1/me/profile').send({ expectedRevision: 2, bio: 'x' }), '/v1/me/profile', 'patch'],
+      [request(app).get('/v1/me/profile/preview'), '/v1/me/profile/preview', 'get'],
+      [request(app).post('/v1/me/prompts').send({ promptId: 'prompt-home', text: 'x' }), '/v1/me/prompts', 'post'],
+      [request(app).patch(`/v1/me/prompts/${answerId}`).send({ expectedRevision: 2, text: 'x' }), '/v1/me/prompts/{id}', 'patch'],
+      [request(app).delete(`/v1/me/prompts/${answerId}`), '/v1/me/prompts/{id}', 'delete'],
+      [request(app).get('/v1/me/preferences'), '/v1/me/preferences', 'get'],
+      [request(app).patch('/v1/me/preferences').send({ expectedRevision: 2, longDistance: true }), '/v1/me/preferences', 'patch'],
+    ];
+    for (const [req, apiPath, method] of restricted) {
+      res = await req.set('Authorization', as('alice'));
+      expect(res.status, `${method} ${apiPath}`).toBe(403);
+      expect(res.body.error.code).toBe('ACCOUNT_RESTRICTED');
+      check(res, apiPath, method);
+    }
   });
 });

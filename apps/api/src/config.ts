@@ -35,6 +35,11 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+/** Invalid environment. Its message names the variables and rules, never their values, so it is safe to log. */
+export class ConfigError extends Error {
+  override name = 'ConfigError';
+}
+
 export function loadConfig(): Env {
   const result = envSchema.safeParse(process.env);
 
@@ -42,7 +47,7 @@ export function loadConfig(): Env {
     const formatted = result.error.issues
       .map((i) => `  ${i.path.join('.')}: ${i.message}`)
       .join('\n');
-    throw new Error(`Invalid environment configuration:\n${formatted}`);
+    throw new ConfigError(`Invalid environment configuration:\n${formatted}`);
   }
 
   const config = result.data;
@@ -57,5 +62,24 @@ export function loadConfig(): Env {
     }
   }
 
+  assertNoEmulatorsInProduction(config);
+
   return config;
+}
+
+const EMULATOR_HOST_VARS = ['FIREBASE_AUTH_EMULATOR_HOST', 'FIRESTORE_EMULATOR_HOST'] as const;
+
+/**
+ * Refuse to start production with Firebase emulator settings. With
+ * FIREBASE_AUTH_EMULATOR_HOST set, firebase-admin accepts unsigned emulator ID
+ * tokens, so anyone could sign in as anyone. Any value counts as set, even an
+ * empty one: the fix is to remove the variable.
+ */
+function assertNoEmulatorsInProduction(config: Env): void {
+  if (config.NODE_ENV !== 'production') return;
+  const present = EMULATOR_HOST_VARS.filter((name) => config[name] !== undefined);
+  if (present.length > 0) {
+    // ConfigError: the message names variables only, so startup logs it in full
+    throw new ConfigError(`Firebase emulator settings are not allowed in production. Unset: ${present.join(', ')}`);
+  }
 }

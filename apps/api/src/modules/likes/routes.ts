@@ -4,6 +4,7 @@ import type { Auth } from 'firebase-admin/auth';
 import type { Env } from '../../config.js';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
 import { canAuthenticate, canInteract, type UserDocument } from '../auth/account.js';
+import type { ProfileAccess } from '../profiles/routes.js';
 import { toIncomingLikeDTOs, toOutgoingLikeDTO, toQuotaDTO } from './dto.js';
 import { noopPairGuard, type PairGuard } from './pair-guard.js';
 import { getQuotaStatus, QUOTAS_COLLECTION, type QuotaDocument, type QuotaPolicy } from './quota.js';
@@ -15,6 +16,12 @@ import { decodeCursor, encodeCursor, IDEMPOTENCY_KEY_PATTERN, parseLimit, parseS
 export type LikesRoutesConfig = Pick<Env, 'LIKES_PER_UTC_DAY'>;
 
 export interface LikesRoutesOptions {
+  /**
+   * Who a sender may like: only someone whose profile they may view right now.
+   * Must be the same check as `GET /v1/profiles/:id` (the shared discovery
+   * service). Required, so likes never fall back to open access.
+   */
+  profileAccess: ProfileAccess;
   /** Server clock; injectable for UTC-boundary tests */
   now?: () => Date;
   /** Block/pair checks; no-op until Phases 09 and 12 */
@@ -24,7 +31,7 @@ export interface LikesRoutesOptions {
 /** Bump when the allowance policy changes meaning, not just its number */
 const QUOTA_POLICY_VERSION = 1;
 
-export function createLikesRoutes(db: Db, auth: Auth, config: LikesRoutesConfig, options: LikesRoutesOptions = {}) {
+export function createLikesRoutes(db: Db, auth: Auth, config: LikesRoutesConfig, options: LikesRoutesOptions) {
   const router = Router();
   const requireAuth = createAuthMiddleware(auth);
   const users = db.collection<UserDocument>('users');
@@ -34,6 +41,7 @@ export function createLikesRoutes(db: Db, auth: Auth, config: LikesRoutesConfig,
     db,
     policy,
     pairGuard: options.pairGuard ?? noopPairGuard,
+    profileAccess: options.profileAccess,
     now: options.now ?? (() => new Date()),
   };
 
@@ -85,7 +93,8 @@ export function createLikesRoutes(db: Db, auth: Auth, config: LikesRoutesConfig,
 
   /**
    * POST /v1/likes
-   * Like one photo or prompt answer at a specific content version.
+   * Like one photo or prompt answer at a specific content version, of someone
+   * whose profile the sender may view right now.
    */
   router.post('/v1/likes', requireAuth, async (req: Request, res: Response) => {
     const idempotencyKey = req.get('Idempotency-Key');
