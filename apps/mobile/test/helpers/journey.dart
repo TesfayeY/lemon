@@ -89,9 +89,13 @@ Future<void> completePrompts(WidgetTester tester) async {
     await tapVisible(tester, find.widgetWithText(OutlinedButton, 'Choose a prompt'));
     await tapText(tester, entry.key);
     await tester.enterText(find.widgetWithText(TextField, 'Your answer'), entry.value);
-    await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Submit for review'));
+    await tapVisible(tester, find.widgetWithText(ElevatedButton, 'Save answer'));
   }
-  expect(find.text('Waiting for review'), findsNWidgets(3));
+  // Answers are on the profile as soon as they are saved (D-13)
+  expect(find.text('3 of 3 answered'), findsOneWidget);
+  for (final answer in answers.values) {
+    expect(find.text(answer, skipOffstage: false), findsOneWidget);
+  }
   await continueStep(tester);
 }
 

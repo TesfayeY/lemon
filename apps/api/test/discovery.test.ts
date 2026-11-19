@@ -161,8 +161,7 @@ async function seed(name: string, s: PersonSpec = {}): Promise<string> {
   ]);
   await db.collection('promptAnswers').insertMany([0, 1, 2].map((slot) => ({
     _id: `${name}-answer-${slot}`, ownerId: name, promptId: ['prompt-tradition', 'prompt-sunday', 'prompt-home'][slot],
-    slot, approvedText: `Answer ${slot}`, pendingText: slot === 0 ? 'Unreviewed edit' : null,
-    state: slot === 0 ? 'pending' : 'approved', revision: 1, publishedRevision: 1, createdAt: now, updatedAt: now,
+    slot, approvedText: `Answer ${slot}`, revision: 1, publishedRevision: 1, createdAt: now, updatedAt: now,
   })));
   return name;
 }
@@ -281,7 +280,7 @@ describe('GET /v1/discovery: mutual eligibility', () => {
 
     const [card] = res.body.data.items;
     expect(card.profile).toMatchObject({ userId: 'dawit', displayName: 'dawit', hometown: 'Asmara', stateCode: 'XA' });
-    // Published text only; the edit awaiting review never leaks
+    // Every answer in slot order, at its published content version
     expect(card.profile.promptAnswers.map((a: { text: string }) => a.text)).toEqual(['Answer 0', 'Answer 1', 'Answer 2']);
     expect(card.profile.promptAnswers.map((a: { contentVersion: number }) => a.contentVersion)).toEqual([1, 1, 1]);
     // Photos come from the shared public projection; the card has nothing else
@@ -291,7 +290,7 @@ describe('GET /v1/discovery: mutual eligibility', () => {
 
     const body = JSON.stringify(res.body);
     for (const secret of ['1994-02-15', 'uid-dawit', 'firebaseUid', 'birthDate', 'accountStatus', 'discoverPaused',
-      'Unreviewed edit', 'quarantine/', 'photo-pending', 'acceptedGenderCategories', 'minAge', 'locationScope']) {
+      'quarantine/', 'photo-pending', 'acceptedGenderCategories', 'minAge', 'locationScope']) {
       expect(body).not.toContain(secret);
     }
   });

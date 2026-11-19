@@ -133,7 +133,7 @@ async function resolveTarget(
   }
 
   const answer = await promptAnswers.findOne({ _id: target.id, ownerId: recipientId }, { session });
-  // Only published text counts; a newer edit awaiting review is never exposed
+  // A like quotes the published text at the version the sender saw
   if (!answer || answer.approvedText === null) throw targetUnavailable();
   if (answer.publishedRevision !== target.contentVersion) {
     throw new LikeError(409, 'TARGET_STALE', 'This answer changed. Refresh the profile and try again.');

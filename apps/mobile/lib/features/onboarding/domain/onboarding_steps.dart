@@ -43,8 +43,8 @@ List<OnboardingStep> visibleSteps(Readiness readiness) => [
 ];
 
 /// Where to resume: the earliest step with a missing requirement, else the
-/// readiness summary. Photos and prompts can stay "missing" while they wait
-/// for review; the person sees that state on those steps.
+/// readiness summary. Photos can stay "missing" while they wait for review;
+/// the person sees that state on the photos step.
 OnboardingStep resumeStep(Readiness readiness) {
   OnboardingStep? earliest;
   for (final requirement in readiness.missing) {

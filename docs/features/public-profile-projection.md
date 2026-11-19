@@ -19,8 +19,11 @@ its own inputs, so a caller that passes too much can't leak anything:
   pending, rejected, processing, failed or deleted photos.
 - **Prompt answers:** only published text (`approvedText`), in slot order,
   with `contentVersion` set to the answer's `publishedRevision`. The likes
-  service checks prompt likes against this value. A pending edit leaves both
-  the text and the version unchanged. Publishing a new revision bumps both.
+  service checks prompt likes against this value. Since D-13 answers publish
+  as soon as they are saved: a new answer appears at version 1, and an edit
+  that changes the words replaces the text and bumps the version at once.
+  (Before D-13 a pending edit left both unchanged until a moderator approved
+  it.)
 - `loadPublicProfiles(db, ids)` builds projections in four batched reads.
   `GET /v1/profiles/:id`, `GET /v1/me/profile/preview` and every Discover card
   use it.
@@ -117,7 +120,9 @@ deleting accounts.
   `canViewProfile` check for non-owners, so a photo is
   never reachable when its profile answers 404. The check also runs before a
   `304`, so losing access stops cached revalidation too.
-- **Self-description publication:** once text review exists, decide whether it
-  follows `genderDisplay` and goes through the same pending/approved split as prompt answers.
+- **Self-description publication:** stays owner-only for now. Prompt answers no
+  longer have a pending/approved split (D-13), so publishing the
+  self-description, and whether it follows `genderDisplay`, is a separate owner
+  decision.
 - **Error codes:** new codes (for example from admin moderation) must be added to
   `ErrorCode`, or the drift test fails.

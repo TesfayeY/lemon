@@ -20,7 +20,7 @@ import { createDiscoveryRoutes } from '../src/modules/discovery/routes.js';
 import { createDiscoveryService } from '../src/modules/discovery/service.js';
 import type { PairExclusionProvider } from '../src/modules/discovery/exclusions.js';
 import { createProfileRoutes } from '../src/modules/profiles/routes.js';
-import { createEmptyProfile, type PromptAnswerDocument } from '../src/modules/profiles/schema.js';
+import { createEmptyProfile } from '../src/modules/profiles/schema.js';
 import { createDefaultPreferences, type LocationScope } from '../src/modules/preferences/schema.js';
 import type { AccountStatusType, UserDocument } from '../src/modules/auth/account.js';
 import { createMultiUserAuth } from './support.js';
@@ -136,8 +136,7 @@ async function seed(name: string, s: PersonSpec = {}): Promise<string> {
   ]);
   await db.collection('promptAnswers').insertMany([0, 1, 2].map((slot) => ({
     _id: `${name}-answer-${slot}`, ownerId: name, promptId: ['prompt-tradition', 'prompt-sunday', 'prompt-home'][slot],
-    slot, approvedText: `Answer ${slot}`, pendingText: slot === 0 ? 'Unreviewed edit' : null,
-    state: slot === 0 ? 'pending' : 'approved', revision: 1, publishedRevision: slot + 1, createdAt: now, updatedAt: now,
+    slot, approvedText: `Answer ${slot}`, revision: 1, publishedRevision: slot + 1, createdAt: now, updatedAt: now,
   })));
   return name;
 }
@@ -201,7 +200,7 @@ describe('GET /v1/profiles/:id: public projection', () => {
 
     const body = JSON.stringify(res.body);
     for (const secret of ['1994-02-15', 'uid-dawit', 'firebaseUid', 'birthDate', 'email', 'accountStatus', 'discoverPaused',
-      'Unreviewed edit', 'pendingText', 'quarantine/', 'public-variants/', 'idem-', 'variantKeys', 'moderationReason',
+      'pendingText', 'quarantine/', 'public-variants/', 'idem-', 'variantKeys', 'moderationReason',
       'contact_details', 'dawit-pending', 'dawit-rejected', 'dawit-deleted', 'In my own words', 'genderSelfDescription',
       'acceptedGenderCategories', 'minAge', 'locationScope', 'publishedRevision']) {
       expect(body).not.toContain(secret);
@@ -224,20 +223,23 @@ describe('GET /v1/profiles/:id: public projection', () => {
     expect(preview.body.data).toEqual(viewed.body.data);
   });
 
-  it('bumps a prompt contentVersion only when a new revision is published', async () => {
+  it('publishes an owner edit at once under a new contentVersion, and only when the words change', async () => {
     await woman('viewer');
     await man('dawit');
     const app = makeApp();
-    const answers = db.collection<PromptAnswerDocument>('promptAnswers');
     const versionOf = async () => (await view(app, 'viewer', 'dawit')).body.data.promptAnswers[1];
+    const edit = (expectedRevision: number, text: string) => request(app).patch('/v1/me/prompts/dawit-answer-1')
+      .set('Authorization', as('dawit')).send({ expectedRevision, text });
 
     expect(await versionOf()).toMatchObject({ text: 'Answer 1', contentVersion: 2 });
-    await answers.updateOne({ _id: 'dawit-answer-1' }, { $set: { pendingText: 'Newer', state: 'pending', revision: 2 } });
-    expect(await versionOf()).toMatchObject({ text: 'Answer 1', contentVersion: 2 });
-    // What prompt review does on approval
-    await answers.updateOne({ _id: 'dawit-answer-1' },
-      { $set: { approvedText: 'Newer', pendingText: null, state: 'approved' }, $inc: { publishedRevision: 1 } });
+    expect((await edit(1, 'Newer')).body.data).toMatchObject({ text: 'Newer', revision: 2, contentVersion: 3 });
     expect(await versionOf()).toMatchObject({ text: 'Newer', contentVersion: 3 });
+
+    // Saving the same words again is a new owner revision but not new content
+    expect((await edit(2, '  Newer ')).body.data).toMatchObject({ text: 'Newer', revision: 3, contentVersion: 3 });
+    expect(await versionOf()).toMatchObject({ text: 'Newer', contentVersion: 3 });
+    // Readiness was recomputed and still holds, so the profile stays viewable
+    expect((await db.collection<UserDocument>('users').findOne({ _id: 'dawit' }))!.profileReady).toBe(true);
   });
 });
 

@@ -217,8 +217,8 @@ async function seedCompleteProfile(db: Db, name: string): Promise<void> {
   } as unknown as Doc);
   for (const [slot, promptId] of ['prompt-1', 'prompt-2', 'prompt-3'].entries()) {
     await db.collection('promptAnswers').insertOne({
-      _id: uuidv4(), ownerId: userId(name), promptId, slot, approvedText: 'Buna with friends', pendingText: null,
-      state: 'approved', revision: 1, publishedRevision: 1, createdAt: now, updatedAt: now,
+      _id: uuidv4(), ownerId: userId(name), promptId, slot, approvedText: 'Buna with friends',
+      revision: 1, publishedRevision: 1, createdAt: now, updatedAt: now,
     } as unknown as Doc);
   }
 }

@@ -8,10 +8,10 @@
 ## Status
 
 Done on the Flutter side, wired to the real API through a typed client. The
-server's review service decides when photos and prompt answers are approved,
-so a brand-new profile only becomes ready after a person reviews its content
-(`scripts/admin-review.ts` or the admin API for photos and prompt answers; see
-`admin-moderation.md`).
+server's review service decides when photos are approved, so a brand-new
+profile only becomes ready after a person reviews its photos
+(`scripts/admin-review.ts` or the admin API; see `admin-moderation.md`). Prompt
+answers publish as soon as they are saved (D-13, 2026-11-12).
 
 ## What was built
 
@@ -45,12 +45,12 @@ so a brand-new profile only becomes ready after a person reviews its content
 | Location | Search over catalog US cities only, shown as "Seattle, WA"; same-named cities stay distinct; "unknown city" help. No free text, no country picker. |
 | Preferences | Interests (multi-select, at least one), age range 18–99, scope city/state/nationwide with explanations and the mutual-scope note, long distance with "doesn't widen where matches live". |
 | Photos | Ordered grid (2 columns at large text or narrow screens, 3 otherwise), states processing / in review / approved / not approved with icon + label, upload with retry using the same idempotency key, reorder via an accessible options menu, remove with a below-minimum warning, rejected photos with localized reason and Replace (upload new, then remove rejected). Continue needs 3 non-rejected photos. |
-| Prompts | Three slots. Approved text, pending submission ("Waiting for review"), "current answer stays on your profile until the new one is reviewed", rejected with respectful copy and "Write a new answer". Picker with search and category chips, already-answered prompts left out, server `DUPLICATE_PROMPT` explained. |
+| Prompts | Three slots. Each answer shows exactly as it appears on the profile, with Edit and Remove; "Save answer" publishes it right away (D-13), so there is no review state. Picker with search and category chips, already-answered prompts left out, server `DUPLICATE_PROMPT` explained. |
 | More about you | Optional bio, hometown, work, education, height (ft/in with cm), languages, each with "show on my profile". Sensitive fields behind the P-03 flag. Skippable. |
-| Readiness | Rendered from `readiness.ready/missing` only. Ready → "Start exploring". Not ready → each missing item with a "Fix" jump, review-time note, "Check again". |
+| Readiness | Rendered from `readiness.ready/missing` only. Ready → "Start exploring". Not ready → each missing item with a "Fix" jump, a review-time note when photos are missing, "Check again". |
 | You tab | Name, city, server visibility status with missing items, paused note, links to preview and every edit section. |
 | Edit screens | The same forms and editors as onboarding, with "Save". |
-| Profile preview | `GET /v1/me/profile/preview` plus approved photos, in a `PublicProfileView` Discover can reuse. Private fields and pending content are absent. |
+| Profile preview | `GET /v1/me/profile/preview` plus approved photos, in a `PublicProfileView` Discover can reuse. Private fields and photos in review are absent; prompt answers show as saved. |
 
 ### Revision conflicts
 
@@ -96,8 +96,9 @@ reorder refreshes the grid and says so.
   the 422.
 - **Sign-in:** Phase 03 shipped the API side only; there are no Flutter sign-in
   screens. Until they exist the app runs with a dev token source.
-- Photos and prompt answers that are pending count as "submitted" for the
-  Continue buttons (UX only). Readiness is always the server's answer.
+- Photos that are pending count as "submitted" for the Continue button (UX
+  only). Saved prompt answers are already published. Readiness is always the
+  server's answer.
 
 ## API and contract gaps found
 
@@ -108,7 +109,8 @@ moderation (PR #18). Items 5 and 7 remain open.
 1. **Prompt rejection reason missing.** `SelfPromptAnswer` has no
    `rejectionReason` (photos do). The client shows one generic respectful
    message. There is also no prompt review service or dev script, so prompts
-   can only reach `approved`/`rejected` by editing the database.
+   can only reach `approved`/`rejected` by editing the database. *(Moot since
+   D-13: prompt answers are no longer reviewed.)*
 2. **Public profile has no photos.** `PublicProfile` omits photos
    (`PublicPhoto` exists in `media.yaml` "once profiles embed photos"). The
    preview stitches in approved photos from `GET /v1/me/photos`; Discover will
@@ -158,14 +160,15 @@ Android emulators reach the host at `10.0.2.2`. Approve photos with
 - `test/features/onboarding/onboarding_widgets_test.dart`: adult gate, terms,
   required fields, server field errors, city search, preferences, readiness.
 - `test/features/profile/editing_test.dart`: You status, conflict keep/use
-  latest (profile and preferences), preview hides private and pending
-  content, P-03 flag.
+  latest (profile and preferences), preview hides private fields and photos
+  in review and shows saved answers, P-03 flag.
 - `test/features/profile/review_editors_test.dart`: photo states, replace,
   upload/retry with one key, unsupported format, reorder, stale reorder,
-  removal below minimum, prompt states, replace rejected, duplicates, empty
-  answer, removal.
+  removal below minimum, answers shown as published, add and edit (PATCH
+  with revision), picker, duplicates, empty answer, removal, three to
+  continue.
 - `test/journey/onboarding_journey_test.dart`: full happy path to the app
-  only after approval, restart midway, back navigation, failed save.
+  only after photo approval, restart midway, back navigation, failed save.
 - `test/l10n/localization_test.dart`, `test/accessibility/large_text_test.dart`.
 - `integration_test/onboarding_journey_test.dart`: the happy path on a device
   or desktop against the in-memory backend.
@@ -174,10 +177,10 @@ Android emulators reach the host at `10.0.2.2`. Approve photos with
 
 - ~~Flutter sign-in, verification and recovery screens~~ done in
   `auth-screens.md` (PR #17).
-- Show `rejectionReason` for prompt answers (`promptRejection.*` keys) now that
-  the API sends it.
+- ~~Show `rejectionReason` for prompt answers~~ dropped: prompt answers
+  publish on save (D-13).
 - Integration journey against the real Express API + Auth emulator once a
-  seeded test account and a prompt review tool exist.
+  seeded test account exists.
 - Persist unsent drafts on device across app restarts (today unsent edits
   live in memory; every completed step is saved server-side).
 - Photo crop before upload and upload progress (the multipart client does not

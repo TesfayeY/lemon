@@ -48,6 +48,11 @@ describe('Fictional seed profiles', () => {
       for (const a of answers) {
         expect(validatePromptId(a.promptId)).toBeNull();
         expect(validatePromptAnswer(a.approvedText)).toBeNull();
+        // Stored exactly as saving through the API leaves them: published, no review fields (D-13)
+        expect(Object.keys(a).sort()).toEqual(
+          ['_id', 'approvedText', 'createdAt', 'ownerId', 'promptId', 'publishedRevision', 'revision', 'slot', 'updatedAt'],
+        );
+        expect(a).toMatchObject({ revision: 1, publishedRevision: 1 });
       }
     }
   });

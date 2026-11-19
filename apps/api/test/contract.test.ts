@@ -5,7 +5,6 @@ import path from 'node:path';
 import request from 'supertest';
 import { parse } from 'yaml';
 import { Ajv2020 } from 'ajv/dist/2020.js';
-import type { PromptAnswerDocument } from '../src/modules/profiles/schema.js';
 import type { UserDocument } from '../src/modules/auth/account.js';
 import { buildApp, createInMemoryDb, createMultiUserAuth } from './support.js';
 
@@ -159,12 +158,20 @@ describe('Contract fixtures (leak guards)', () => {
     expect(validate(fixture)).toBe(false);
   });
 
-  it('rejects a published answer that exposes pending text (nested $ref)', () => {
+  it('rejects a published answer that exposes an extra field (nested $ref)', () => {
     const fixture = JSON.parse(readFileSync(path.join(contractsDir, 'fixtures', 'public-profile.json'), 'utf8'));
     fixture.data.promptAnswers[0].pendingText = 'Not reviewed yet';
     const validate = validatorFor('/v1/profiles/{id}', 'get', 200);
     expect(validate(fixture)).toBe(false);
     expect(validate.errors?.[0]?.instancePath).toBe('/data/promptAnswers/0');
+  });
+
+  it('rejects an owner answer that still carries prompt review fields (D-13)', () => {
+    for (const leak of [{ state: 'pending' }, { pendingText: 'x' }, { approvedText: 'x' }, { rejectionReason: null }]) {
+      const fixture = readFixture('self-profile.json');
+      Object.assign(fixture.data.promptAnswers[0], leak);
+      expect(validatorFor('/v1/me/profile', 'get', 200)(fixture), `${JSON.stringify(leak)}`).toBe(false);
+    }
   });
 });
 
@@ -250,10 +257,9 @@ describe('Live responses match the contract', () => {
     const bob = (await users.findOne({ firebaseUid: 'uid-bob' }))!;
     check(await request(app).get(`/v1/profiles/${bob._id}`).set('Authorization', as('alice')), '/v1/profiles/{id}', 'get');
 
+    // Answers publish on save (D-13)
     res = await request(app).post('/v1/me/prompts').set('Authorization', as('bob')).send({ promptId: 'prompt-home', text: 'Addis' });
-    await db.collection<PromptAnswerDocument>('promptAnswers').updateOne({ _id: res.body.data.id }, {
-      $set: { approvedText: 'Addis', pendingText: null, state: 'approved', publishedRevision: 1 },
-    });
+    check(res, '/v1/me/prompts', 'post');
     const photoDoc = (id: string, order: number, state: string) => ({
       _id: id, ownerId: bob._id, state, order, width: 1080, height: 1350, contentVersion: 1, moderationReason: null,
       originalPrivateKey: `quarantine/${bob._id}/${id}`, variantKeys: { thumb: 't', display: 'd' }, requestHash: 'h',

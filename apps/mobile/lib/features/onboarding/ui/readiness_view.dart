@@ -85,11 +85,8 @@ class ReadinessView extends StatelessWidget {
       );
     }
     final missing = readiness.missing;
-    final awaitingReview = missing.any(
-      (r) =>
-          r == ReadinessRequirement.photos ||
-          r == ReadinessRequirement.promptAnswers,
-    );
+    // Only photos wait for a person to review them; answers publish on save
+    final awaitingReview = missing.contains(ReadinessRequirement.photos);
     return ListView(
       padding: const EdgeInsets.all(LemonSpacing.lg),
       children: [

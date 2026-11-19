@@ -11,18 +11,6 @@ enum FieldVisibility implements WireEnum {
   final String wire;
 }
 
-/// Review state of the latest submission for a piece of profile content.
-enum ReviewState implements WireEnum {
-  pending('pending'),
-  approved('approved'),
-  rejected('rejected');
-
-  const ReviewState(this.wire);
-
-  @override
-  final String wire;
-}
-
 /// A published prompt answer as other people see it.
 class PromptAnswer {
   const PromptAnswer({
@@ -98,17 +86,17 @@ class PublicPhoto {
   };
 }
 
-/// The owner's view of an answer. [approvedText] stays published while
-/// [pendingText] waits for review.
+/// The owner's view of an answer, from `GET /v1/me/profile` and from saving
+/// one. Answers publish as soon as they are saved (D-13), so [text] is
+/// exactly what other people see.
 class SelfPromptAnswer {
   const SelfPromptAnswer({
     required this.id,
     required this.promptId,
     required this.promptText,
-    required this.approvedText,
-    required this.pendingText,
-    required this.state,
+    required this.text,
     required this.revision,
+    required this.contentVersion,
   });
 
   factory SelfPromptAnswer.fromJson(Map<String, dynamic> json) =>
@@ -116,30 +104,29 @@ class SelfPromptAnswer {
         id: json['id'] as String,
         promptId: json['promptId'] as String,
         promptText: json['promptText'] as String,
-        approvedText: json['approvedText'] as String?,
-        pendingText: json['pendingText'] as String?,
-        state: parseWire(ReviewState.values, json['state']),
+        text: json['text'] as String,
         revision: json['revision'] as int,
+        contentVersion: json['contentVersion'] as int,
       );
 
   final String id;
   final String promptId;
   final String promptText;
-  final String? approvedText;
-  final String? pendingText;
-  final ReviewState state;
+  final String text;
 
   /// Send back as `expectedRevision` when editing this answer.
   final int revision;
+
+  /// Version of the published text, as others see it.
+  final int contentVersion;
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'promptId': promptId,
     'promptText': promptText,
-    'approvedText': approvedText,
-    'pendingText': pendingText,
-    'state': state.wire,
+    'text': text,
     'revision': revision,
+    'contentVersion': contentVersion,
   };
 }
 
@@ -266,26 +253,6 @@ class SelfProfile {
 
 FieldVisibility _visibility(Object? value) =>
     parseWire(FieldVisibility.values, value);
-
-/// Result of submitting or replacing a prompt answer.
-class PromptSubmission {
-  const PromptSubmission({
-    required this.id,
-    required this.state,
-    required this.revision,
-  });
-
-  factory PromptSubmission.fromJson(Map<String, dynamic> json) =>
-      PromptSubmission(
-        id: json['id'] as String,
-        state: parseWire(ReviewState.values, json['state']),
-        revision: json['revision'] as int,
-      );
-
-  final String id;
-  final ReviewState state;
-  final int revision;
-}
 
 /// Public projection from `GET /v1/profiles/:id` and the owner's preview.
 /// Private fields arrive as null (or an empty language list).

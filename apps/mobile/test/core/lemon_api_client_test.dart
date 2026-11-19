@@ -154,21 +154,29 @@ void main() {
         if (request.method == 'DELETE') {
           return json('{"data":{"deleted":true},"meta":{"requestId":"r"}}');
         }
+        final post = request.method == 'POST';
         return json(
-          '{"data":{"id":"a1","promptId":"prompt-tradition","state":"pending","revision":2},"meta":{"requestId":"r"}}',
-          request.method == 'POST' ? 201 : 200,
+          '{"data":{"id":"a1","promptId":"prompt-tradition",'
+          '"promptText":"A tradition I would love to share with you…",'
+          '"text":"${post ? 'Coffee with my grandmother.' : 'Coffee, three rounds.'}",'
+          '"revision":${post ? 1 : 2},"contentVersion":${post ? 1 : 2}},'
+          '"meta":{"requestId":"r"}}',
+          post ? 201 : 200,
         );
       });
       final created = await api.submitPromptAnswer(
         promptId: 'prompt-tradition',
         text: 'Coffee with my grandmother.',
       );
-      expect(created.state, ReviewState.pending);
-      await api.replacePromptAnswer(
+      expect(created.text, 'Coffee with my grandmother.');
+      expect(created.contentVersion, 1);
+      final replaced = await api.replacePromptAnswer(
         answerId: 'a1',
         expectedRevision: 1,
         text: 'Coffee, three rounds.',
       );
+      expect(replaced.revision, 2);
+      expect(replaced.contentVersion, 2);
       await api.deletePromptAnswer('a1');
 
       expect(sent.map((r) => '${r.method} ${r.url.path}'), [

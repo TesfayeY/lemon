@@ -301,5 +301,28 @@ void main() {
       await tester.tap(find.text('Check again'));
       expect(checked, 1);
     });
+
+    testWidgets('missing prompt answers are not described as waiting for '
+        'review', (tester) async {
+      OnboardingStep? fixed;
+      await tester.pumpWidget(
+        localized(
+          ReadinessView(
+            readiness: const Readiness(
+              ready: false,
+              missing: [ReadinessRequirement.promptAnswers],
+            ),
+            onCheckAgain: () {},
+            onFix: (step) => fixed = step,
+          ),
+        ),
+      );
+
+      expect(find.text('Three prompt answers'), findsOneWidget);
+      // Answers publish on save (D-13); only photos wait for a person
+      expect(find.textContaining('Reviews are done by people'), findsNothing);
+      await tester.tap(find.bySemanticsLabel('Fix: Three prompt answers'));
+      expect(fixed, OnboardingStep.prompts);
+    });
   });
 }

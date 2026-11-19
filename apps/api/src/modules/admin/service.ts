@@ -1,5 +1,6 @@
 /**
- * Staff review and account actions.
+ * Staff review and account actions. Photos are the only reviewed content:
+ * prompt answers publish on save (D-13).
  *
  * Every decision runs in one Mongo transaction that (1) compare-and-sets the
  * target on the state/version the reviewer acted on and (2) appends the audit
@@ -13,18 +14,13 @@
  * ID, display name and account status. Never DOB, email or Firebase UID.
  */
 
-import { createHash } from 'node:crypto';
 import type { Auth } from 'firebase-admin/auth';
 import type { ClientSession, Db, Filter, MongoClient } from 'mongodb';
 import { AccountStatus, type AccountStatusType, type UserDocument } from '../auth/account.js';
-import { findPrompt } from '../catalogs/data.js';
 import { applyPhotoDecision, describeRejection, finishPhotoDecision, ReviewError, type ReviewDecision } from '../media/review-service.js';
 import { PhotoState, type PhotoDocument, type PhotoStateType, type PhotoVariant } from '../media/schema.js';
-import {
-  applyPromptDecision, describePromptRejection, finishPromptDecision, PromptReviewError, type PromptRejectionDTO,
-} from '../profiles/prompt-review.js';
 import { recomputeReadiness } from '../profiles/readiness-service.js';
-import type { ProfileDocument, PromptAnswerDocument } from '../profiles/schema.js';
+import type { ProfileDocument } from '../profiles/schema.js';
 import { appendAuditEntry, type AdminAuditEntry, type AuditInput } from './audit.js';
 import { encodeQueueCursor, type QueueCursor } from './cursor.js';
 import type { StaffActor } from './middleware.js';
@@ -94,32 +90,6 @@ export interface PhotoDetail {
   ownerPhotos: { id: string; state: PhotoStateType; media: MediaPaths }[];
 }
 
-export interface PromptQueueItem {
-  id: string;
-  ownerId: string;
-  promptId: string;
-  promptText: string;
-  pendingText: string;
-  hasPublishedText: boolean;
-  revision: number;
-  submittedAt: Date;
-}
-
-export interface PromptDetail {
-  id: string;
-  state: PromptAnswerDocument['state'];
-  ownerId: string;
-  promptId: string;
-  promptText: string;
-  pendingText: string | null;
-  approvedText: string | null;
-  revision: number;
-  publishedRevision: number;
-  rejectionReason: PromptRejectionDTO | null;
-  submittedAt: Date;
-  owner: OwnerContext;
-}
-
 export interface AccountDetail {
   userId: string;
   displayName: string | null;
@@ -149,8 +119,6 @@ export interface AccountActionInput<R extends string> {
 /** Statuses a staff member can open; failed/processing/deleted photos have no reviewable content */
 const VIEWABLE_PHOTO_STATES: PhotoStateType[] = [PhotoState.PENDING, PhotoState.APPROVED, PhotoState.REJECTED];
 
-const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
-
 function afterCursor(field: 'createdAt' | 'updatedAt', cursor: QueueCursor | null): Record<string, unknown> {
   if (!cursor) return {};
   return { $or: [{ [field]: { $gt: cursor.at } }, { [field]: cursor.at, _id: { $gt: cursor.id } }] };
@@ -179,7 +147,6 @@ export function createAdminService(db: Db, client: MongoClient, auth: SessionRev
   const users = db.collection<StaffViewUser>('users');
   const profiles = db.collection<ProfileDocument>('profiles');
   const photos = db.collection<PhotoDocument>('photos');
-  const answers = db.collection<PromptAnswerDocument>('promptAnswers');
 
   async function inTransaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
     const session = client.startSession();
@@ -291,101 +258,6 @@ export function createAdminService(db: Db, client: MongoClient, auth: SessionRev
       id: photoId,
       state: outcome.after.state,
       rejectionReason: outcome.after.state === PhotoState.REJECTED ? describeRejection(outcome.after.moderationReason) : null,
-      auditId: outcome.audit._id,
-    };
-  }
-
-  // --- Prompt answers ---
-
-  async function listPendingPromptAnswers(cursor: QueueCursor | null, limit: number): Promise<QueuePage<PromptQueueItem>> {
-    // An edit moves an answer's submission time, so it rejoins the queue at the back
-    const filter = { state: 'pending', pendingText: { $ne: null }, ...afterCursor('updatedAt', cursor) } as Filter<PromptAnswerDocument>;
-    const docs = await answers.find(filter).sort({ updatedAt: 1, _id: 1 }).limit(limit + 1).toArray();
-    const page = docs.slice(0, limit);
-    const last = page.at(-1);
-    return {
-      items: page.map((a) => ({
-        id: a._id,
-        ownerId: a.ownerId,
-        promptId: a.promptId,
-        promptText: findPrompt(a.promptId)?.text ?? '',
-        pendingText: a.pendingText ?? '',
-        hasPublishedText: a.approvedText !== null,
-        revision: a.revision,
-        submittedAt: a.updatedAt,
-      })),
-      nextCursor: docs.length > limit && last ? encodeQueueCursor({ at: last.updatedAt, id: last._id }) : null,
-    };
-  }
-
-  async function getPromptAnswer(answerId: string): Promise<PromptDetail | null> {
-    const answer = await answers.findOne({ _id: answerId });
-    if (!answer) return null;
-    return {
-      id: answer._id,
-      state: answer.state,
-      ownerId: answer.ownerId,
-      promptId: answer.promptId,
-      promptText: findPrompt(answer.promptId)?.text ?? '',
-      pendingText: answer.pendingText,
-      approvedText: answer.approvedText,
-      revision: answer.revision,
-      publishedRevision: answer.publishedRevision,
-      rejectionReason: answer.state === 'rejected' ? describePromptRejection(answer.rejectionReason) : null,
-      submittedAt: answer.updatedAt,
-      owner: await ownerContext(answer.ownerId),
-    };
-  }
-
-  async function decidePromptAnswer(
-    actor: StaffActor,
-    answerId: string,
-    input: DecisionInput & { expectedRevision: number },
-    requestId: string,
-  ) {
-    const existing = await answers.findOne({ _id: answerId }, { projection: { ownerId: 1 } });
-    if (!existing) throw new AdminError(404, 'NOT_FOUND', 'Prompt answer not found');
-    await assertNotSelf(actor, existing.ownerId);
-
-    let outcome: { ownerId: string; after: { state: string; publishedRevision: number; rejectionReason: string | null }; audit: AdminAuditEntry };
-    try {
-      outcome = await inTransaction(async (session) => {
-        const decided = await applyPromptDecision(db, answerId, input.decision, input.reason, {
-          expectedRevision: input.expectedRevision,
-          session,
-          now: now(),
-        });
-        const audit = await recordAudit({
-          actor,
-          action: `prompt_answer.${input.decision}`,
-          targetType: 'promptAnswer',
-          targetId: answerId,
-          targetOwnerId: decided.answer.ownerId,
-          reason: input.reason,
-          note: input.note,
-          before: { ...decided.before, pendingTextSha256: sha256(decided.answer.pendingText ?? '') },
-          after: { ...decided.after },
-          requestId,
-          createdAt: decided.decidedAt,
-        }, session);
-        return { ownerId: decided.answer.ownerId, after: decided.after, audit };
-      });
-    } catch (err) {
-      if (err instanceof PromptReviewError) {
-        if (err.code === 'ANSWER_NOT_FOUND') throw new AdminError(404, 'NOT_FOUND', 'Prompt answer not found');
-        if (err.code === 'INVALID_INPUT') throw new AdminError(422, 'VALIDATION_ERROR', err.message);
-        const extra = err.currentRevision === undefined ? {} : { currentRevision: err.currentRevision };
-        throw new AdminError(409, 'REVIEW_CONFLICT', 'This answer was already decided or edited. Refresh and review it again.', extra);
-      }
-      throw err;
-    }
-
-    await finishPromptDecision(db, outcome.ownerId);
-    return {
-      id: answerId,
-      state: outcome.after.state,
-      publishedRevision: outcome.after.publishedRevision,
-      rejectionReason: outcome.after.state === 'rejected' ? describePromptRejection(outcome.after.rejectionReason) : null,
       auditId: outcome.audit._id,
     };
   }
@@ -513,9 +385,6 @@ export function createAdminService(db: Db, client: MongoClient, auth: SessionRev
     findViewablePhoto,
     getPhoto,
     decidePhoto,
-    listPendingPromptAnswers,
-    getPromptAnswer,
-    decidePromptAnswer,
     getAccount,
     suspendAccount: (actor: StaffActor, userId: string, input: AccountActionInput<SuspensionReason>, requestId: string) =>
       changeAccountStatus(actor, userId, 'suspend', input, requestId),

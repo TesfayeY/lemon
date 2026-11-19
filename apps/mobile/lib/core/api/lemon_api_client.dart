@@ -98,10 +98,11 @@ class LemonApiClient {
 
   // Prompt answers
 
-  Future<PromptSubmission> submitPromptAnswer({
+  /// Saves a new answer; it is on the profile right away (D-13).
+  Future<SelfPromptAnswer> submitPromptAnswer({
     required String promptId,
     required String text,
-  }) async => PromptSubmission.fromJson(
+  }) async => SelfPromptAnswer.fromJson(
     await _send(
       'POST',
       '/v1/me/prompts',
@@ -109,11 +110,12 @@ class LemonApiClient {
     ),
   );
 
-  Future<PromptSubmission> replacePromptAnswer({
+  /// Replaces an answer's text; the new text is on the profile right away.
+  Future<SelfPromptAnswer> replacePromptAnswer({
     required String answerId,
     required int expectedRevision,
     required String text,
-  }) async => PromptSubmission.fromJson(
+  }) async => SelfPromptAnswer.fromJson(
     await _send(
       'PATCH',
       '/v1/me/prompts/${Uri.encodeComponent(answerId)}',

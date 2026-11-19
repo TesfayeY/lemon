@@ -138,13 +138,12 @@ let seq = 0;
 const nextTime = () => new Date(Date.UTC(2026, 10, 1) + ++seq * 1000);
 const PROMPTS = ['prompt-tradition', 'prompt-home', 'prompt-sunday', 'prompt-song', 'prompt-cooking'];
 
-type AnswerSpec = 'approved' | 'pending' | 'edit-pending' | 'rejected';
-
 interface MemberSpec {
   status?: AccountStatusType;
   ready?: boolean;
   photos?: PhotoStateType[];
-  answers?: AnswerSpec[];
+  /** Published prompt answers; answers publish on save (D-13) */
+  answers?: number;
 }
 
 interface Member {
@@ -215,21 +214,17 @@ async function seedMember(name: string, s: MemberSpec = {}): Promise<Member> {
   await db.collection('photoSets').insertOne({ _id: userId, ownerId: userId, revision: 1, createdAt: now, updatedAt: now });
 
   const answerIds: string[] = [];
-  for (const [slot, kind] of (s.answers ?? []).entries()) {
+  for (let slot = 0; slot < (s.answers ?? 0); slot++) {
     const id = uuidv4();
     const at = nextTime();
-    const published = kind === 'approved' || kind === 'edit-pending';
     const answer: PromptAnswerDocument = {
       _id: id,
       ownerId: userId,
       promptId: PROMPTS[slot]!,
       slot,
-      approvedText: published ? `${name} published answer ${slot}` : null,
-      pendingText: kind === 'approved' ? null : `${name} submitted answer ${slot}`,
-      state: kind === 'edit-pending' ? 'pending' : kind,
-      revision: kind === 'edit-pending' ? 2 : 1,
-      publishedRevision: published ? 1 : 0,
-      ...(kind === 'rejected' ? { rejectionReason: 'contact_details' } : {}),
+      approvedText: `${name} answer ${slot}`,
+      revision: 1,
+      publishedRevision: 1,
       createdAt: at,
       updatedAt: at,
     };
@@ -241,20 +236,17 @@ async function seedMember(name: string, s: MemberSpec = {}): Promise<Member> {
 
 /** A member everyone can see: active, ready, three approved photos and answers. */
 const seedVisibleMember = (name: string) =>
-  seedMember(name, { status: 'active', ready: true, photos: ['approved', 'approved', 'approved'], answers: ['approved', 'approved', 'approved'] });
+  seedMember(name, { status: 'active', ready: true, photos: ['approved', 'approved', 'approved'], answers: 3 });
 
 const audits = () => db.collection<AdminAuditEntry>(ADMIN_AUDIT_COLLECTION);
 const getUser = (name: string) => db.collection<UserDocument>('users').findOne({ _id: userIdOf(name) });
 const getPhoto = (id: string) => db.collection<PhotoDocument>('photos').findOne({ _id: id });
-const getAnswer = (id: string) => db.collection<PromptAnswerDocument>('promptAnswers').findOne({ _id: id });
 
 const reviewPhoto = (as: string, id: string, body: Record<string, unknown>) =>
   request(app).post(`/v1/admin/content/photos/${id}/review`).set('Authorization', bearer(as)).send(body);
-const reviewAnswer = (as: string, id: string, body: Record<string, unknown>) =>
-  request(app).post(`/v1/admin/content/prompt-answers/${id}/review`).set('Authorization', bearer(as)).send(body);
 
 /** Every admin route with a body that would succeed for an authorized caller. */
-function adminRoutes(ids: { photo: string; answer: string; user: string }) {
+function adminRoutes(ids: { photo: string; user: string }) {
   return [
     { method: 'get', url: '/v1/admin/me' },
     { method: 'get', url: '/v1/admin/reasons' },
@@ -262,9 +254,6 @@ function adminRoutes(ids: { photo: string; answer: string; user: string }) {
     { method: 'get', url: `/v1/admin/content/photos/${ids.photo}` },
     { method: 'get', url: `/v1/admin/content/photos/${ids.photo}/media/display` },
     { method: 'post', url: `/v1/admin/content/photos/${ids.photo}/review`, body: { decision: 'approve' } },
-    { method: 'get', url: '/v1/admin/content/prompt-answers' },
-    { method: 'get', url: `/v1/admin/content/prompt-answers/${ids.answer}` },
-    { method: 'post', url: `/v1/admin/content/prompt-answers/${ids.answer}/review`, body: { decision: 'approve', expectedRevision: 1 } },
     { method: 'get', url: `/v1/admin/users/${ids.user}` },
     { method: 'post', url: `/v1/admin/users/${ids.user}/suspend`, body: { reason: 'harassment' } },
     { method: 'post', url: `/v1/admin/users/${ids.user}/restore`, body: { reason: 'appeal_upheld' } },
@@ -282,8 +271,8 @@ function send(route: { method: 'get' | 'post'; url: string; body?: Record<string
 
 describe('admin authorization', () => {
   it('rejects missing, forged, revoked and member tokens on every admin route, and spoofed role hints', async () => {
-    const m = await seedMember('alice', { photos: ['pending'], answers: ['pending'] });
-    const routes = adminRoutes({ photo: m.photoIds[0]!, answer: m.answerIds[0]!, user: m.userId });
+    const m = await seedMember('alice', { photos: ['pending'] });
+    const routes = adminRoutes({ photo: m.photoIds[0]!, user: m.userId });
 
     for (const route of routes) {
       expect((await send(route)).status, `${route.url} without a token`).toBe(401);
@@ -311,21 +300,19 @@ describe('admin authorization', () => {
 
     // Nothing was decided or audited by any of those requests
     expect((await getPhoto(m.photoIds[0]!))!.state).toBe('pending');
-    expect((await getAnswer(m.answerIds[0]!))!.state).toBe('pending');
     expect((await getUser('alice'))!.accountStatus).toBe('onboarding');
     expect(await audits().countDocuments()).toBe(0);
   });
 
   it('keeps moderators to content review and lets administrators manage accounts', async () => {
-    const m = await seedMember('alice', { status: 'active', photos: ['pending'], answers: ['pending'] });
+    const m = await seedMember('alice', { status: 'active', photos: ['pending'] });
 
     const me = await request(app).get('/v1/admin/me').set('Authorization', bearer('mod'));
     expect(me.status).toBe(200);
     expect(me.body.data).toEqual({ role: 'moderator', permissions: ['content.review'] });
     expectContract(me, '/v1/admin/me', 'get');
 
-    for (const url of ['/v1/admin/reasons', '/v1/admin/content/photos', '/v1/admin/content/prompt-answers',
-      `/v1/admin/content/photos/${m.photoIds[0]}`, `/v1/admin/content/prompt-answers/${m.answerIds[0]}`]) {
+    for (const url of ['/v1/admin/reasons', '/v1/admin/content/photos', `/v1/admin/content/photos/${m.photoIds[0]}`]) {
       expect((await request(app).get(url).set('Authorization', bearer('mod'))).status, `${url}`).toBe(200);
     }
     for (const route of [
@@ -364,10 +351,9 @@ describe('admin authorization', () => {
   });
 
   it('never lets staff decide on their own content or account', async () => {
-    const m = await seedMember('alice', { status: 'active', photos: ['pending'], answers: ['pending'] });
+    const m = await seedMember('alice', { status: 'active', photos: ['pending'] });
     for (const res of [
       await reviewPhoto('staff-alice', m.photoIds[0]!, { decision: 'approve' }),
-      await reviewAnswer('staff-alice', m.answerIds[0]!, { decision: 'approve', expectedRevision: 1 }),
       await request(app).post(`/v1/admin/users/${m.userId}/restore`).set('Authorization', bearer('staff-alice')).send({ reason: 'appeal_upheld' }),
     ]) {
       expect(res.status).toBe(403);
@@ -420,38 +406,6 @@ describe('review queues', () => {
     expect(first.body.meta.nextCursor).toBeNull();
   });
 
-  it('lists only pending prompt answers, oldest submission first', async () => {
-    const alice = await seedMember('alice', { answers: ['pending', 'approved', 'edit-pending'] });
-    const bob = await seedMember('bob', { answers: ['rejected', 'pending'] });
-
-    const page1 = await request(app).get('/v1/admin/content/prompt-answers?limit=2').set('Authorization', bearer('mod'));
-    expect(page1.status).toBe(200);
-    expectContract(page1, '/v1/admin/content/prompt-answers', 'get');
-    const page2 = await request(app).get('/v1/admin/content/prompt-answers')
-      .query({ limit: 2, cursor: page1.body.meta.nextCursor }).set('Authorization', bearer('mod'));
-    expect(page2.body.meta.nextCursor).toBeNull();
-
-    const items = [...page1.body.data, ...page2.body.data];
-    expect(items.map((a: { id: string }) => a.id)).toEqual([alice.answerIds[0], alice.answerIds[2], bob.answerIds[1]]);
-    expect(items[1]).toEqual({
-      id: alice.answerIds[2],
-      ownerId: alice.userId,
-      promptId: 'prompt-sunday',
-      promptText: 'My ideal Sunday looks like…',
-      pendingText: 'alice submitted answer 2',
-      hasPublishedText: true,
-      revision: 2,
-      submittedAt: expect.any(String),
-    });
-
-    // An owner edit is a new submission: it moves to the back of the queue
-    const edit = await request(app).patch(`/v1/me/prompts/${alice.answerIds[0]}`).set('Authorization', bearer('alice'))
-      .send({ expectedRevision: 1, text: 'A fresh take' });
-    expect(edit.status).toBe(200);
-    const after = await request(app).get('/v1/admin/content/prompt-answers').set('Authorization', bearer('mod'));
-    expect(after.body.data.map((a: { id: string }) => a.id)).toEqual([alice.answerIds[2], bob.answerIds[1], alice.answerIds[0]]);
-  });
-
   it('rejects malformed cursors and page sizes', async () => {
     for (const query of [{ cursor: 'not-a-cursor' }, { cursor: Buffer.from('[1,2,3]').toString('base64url') }]) {
       const res = await request(app).get('/v1/admin/content/photos').query(query).set('Authorization', bearer('mod'));
@@ -459,16 +413,16 @@ describe('review queues', () => {
       expect(res.body.error.code).toBe('INVALID_CURSOR');
     }
     for (const limit of ['0', '51', 'abc', '2.5']) {
-      const res = await request(app).get('/v1/admin/content/prompt-answers').query({ limit }).set('Authorization', bearer('mod'));
+      const res = await request(app).get('/v1/admin/content/photos').query({ limit }).set('Authorization', bearer('mod'));
       expect(res.status, `limit=${limit}`).toBe(422);
-      expectContract(res, '/v1/admin/content/prompt-answers', 'get');
+      expectContract(res, '/v1/admin/content/photos', 'get');
     }
   });
 });
 
 describe('photo review', () => {
   it('approving the third photo publishes it, makes the profile ready and audits the decision', async () => {
-    const m = await seedMember('alice', { photos: ['approved', 'approved', 'pending'], answers: ['approved', 'approved', 'approved'] });
+    const m = await seedMember('alice', { photos: ['approved', 'approved', 'pending'], answers: 3 });
     await seedVisibleMember('bob');
     const photoId = m.photoIds[2]!;
     expect((await request(app).get(`/v1/media/${photoId}/display`).set('Authorization', bearer('bob'))).status).toBe(404);
@@ -612,140 +566,54 @@ describe('quarantine media', () => {
   });
 });
 
-describe('prompt answer review', () => {
-  it('approving publishes the pending text, bumps publishedRevision and recomputes readiness', async () => {
-    const m = await seedMember('alice', { photos: ['approved', 'approved', 'approved'], answers: ['approved', 'approved', 'pending'] });
-    await seedVisibleMember('bob');
-    const id = m.answerIds[2]!;
+describe('prompt answers (no review, D-13)', () => {
+  it('has no prompt answer queue, detail or review routes', async () => {
+    const m = await seedMember('alice', { answers: 1 });
+    for (const route of [
+      { method: 'get' as const, url: '/v1/admin/content/prompt-answers' },
+      { method: 'get' as const, url: `/v1/admin/content/prompt-answers/${m.answerIds[0]}` },
+      { method: 'post' as const, url: `/v1/admin/content/prompt-answers/${m.answerIds[0]}/review`, body: { decision: 'reject', reason: 'promotional', expectedRevision: 1 } },
+    ]) {
+      const res = await send(route, bearer('admin'));
+      expect(res.status, `${route.url}`).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    }
+    const answer = await db.collection<PromptAnswerDocument>('promptAnswers').findOne({ _id: m.answerIds[0]! });
+    expect(answer).toMatchObject({ approvedText: 'alice answer 0', publishedRevision: 1 });
+    expect(await audits().countDocuments()).toBe(0);
+  });
 
-    const detail = await request(app).get(`/v1/admin/content/prompt-answers/${id}`).set('Authorization', bearer('mod'));
-    expect(detail.status).toBe(200);
-    expectContract(detail, '/v1/admin/content/prompt-answers/{id}', 'get');
-    expect(detail.body.data).toMatchObject({ state: 'pending', pendingText: 'alice submitted answer 2', approvedText: null, revision: 1 });
-
-    const res = await reviewAnswer('mod', id, { decision: 'approve', expectedRevision: detail.body.data.revision });
-    expect(res.status).toBe(200);
-    expectContract(res, '/v1/admin/content/prompt-answers/{id}/review', 'post');
-    expect(res.body.data).toEqual({ id, state: 'approved', publishedRevision: 1, rejectionReason: null, auditId: expect.any(String) });
-
-    const answer = (await getAnswer(id))!;
-    expect(answer).toMatchObject({ approvedText: 'alice submitted answer 2', pendingText: null, state: 'approved', publishedRevision: 1, revision: 1, rejectionReason: null });
-    expect((await getUser('alice'))!).toMatchObject({ profileReady: true, accountStatus: 'active' });
-
-    const profile = await request(app).get(`/v1/profiles/${m.userId}`).set('Authorization', bearer('bob'));
-    expect(profile.status).toBe(200);
-    expect(profile.body.data.promptAnswers.map((a: { text: string }) => a.text)).toContain('alice submitted answer 2');
-
-    const [entry] = await audits().find().toArray();
-    expect(entry).toMatchObject({
-      action: 'prompt_answer.approve',
+  it('still reads legacy prompt review entries from the audit log', async () => {
+    const m = await seedMember('alice', { answers: 1 });
+    const legacy = (action: 'prompt_answer.approve' | 'prompt_answer.reject', minute: number): AdminAuditEntry => ({
+      _id: `legacy-${action}`,
+      actorUid: 'staff-mod',
+      actorRole: 'moderator',
+      action,
       targetType: 'promptAnswer',
-      targetId: id,
-      before: { state: 'pending', revision: 1, publishedRevision: 0, rejectionReason: null, pendingTextSha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
-      after: { state: 'approved', revision: 1, publishedRevision: 1, rejectionReason: null },
+      targetId: m.answerIds[0]!,
+      targetOwnerId: m.userId,
+      reason: action === 'prompt_answer.reject' ? 'contact_details' : null,
+      note: null,
+      before: { state: 'pending', revision: 1, publishedRevision: 0, rejectionReason: null, pendingTextSha256: 'a'.repeat(64) },
+      after: { state: action === 'prompt_answer.reject' ? 'rejected' : 'approved', revision: 1, publishedRevision: 0, rejectionReason: null },
+      requestId: `req-${minute}`,
+      createdAt: new Date(Date.UTC(2026, 9, 1, 12, minute)),
     });
-    // Audit entries never carry the answer text itself
-    expect(JSON.stringify(entry)).not.toContain('alice submitted answer 2');
-  });
+    await audits().insertMany([legacy('prompt_answer.reject', 0), legacy('prompt_answer.approve', 5)]);
 
-  it('approving an edit replaces the published text and bumps the content version', async () => {
-    const m = await seedMember('alice', { answers: ['edit-pending'] });
-    const res = await reviewAnswer('mod', m.answerIds[0]!, { decision: 'approve', expectedRevision: 2 });
-    expect(res.body.data.publishedRevision).toBe(2);
-    expect((await getAnswer(m.answerIds[0]!))!.approvedText).toBe('alice submitted answer 0');
-  });
-
-  it('rejecting an edit keeps the published text live, shows the owner the reason and never the public', async () => {
-    const m = await seedMember('alice', { status: 'active', ready: true, photos: ['approved', 'approved', 'approved'], answers: ['approved', 'approved', 'edit-pending'] });
-    await seedVisibleMember('bob');
-    const id = m.answerIds[2]!;
-
-    const res = await reviewAnswer('mod', id, { decision: 'reject', reason: 'contact_details', note: 'Instagram handle in text', expectedRevision: 2 });
+    const res = await request(app).get('/v1/admin/audit-log').query({ targetType: 'promptAnswer', targetId: m.answerIds[0] })
+      .set('Authorization', bearer('admin'));
     expect(res.status).toBe(200);
-    expect(res.body.data).toMatchObject({ state: 'rejected', publishedRevision: 1, rejectionReason: { code: 'contact_details', action: 'replace' } });
-    expect((await getAnswer(id))!).toMatchObject({
-      approvedText: 'alice published answer 2', pendingText: 'alice submitted answer 2', state: 'rejected', rejectionReason: 'contact_details', publishedRevision: 1,
-    });
-    expect((await getUser('alice'))!.profileReady).toBe(true);
-
-    // Owner: the reason, a localization key and the replace action
-    const own = await request(app).get('/v1/me/profile').set('Authorization', bearer('alice'));
-    expectContract(own, '/v1/me/profile', 'get');
-    const ownAnswer = own.body.data.promptAnswers.find((a: { id: string }) => a.id === id);
-    expect(ownAnswer).toMatchObject({
-      state: 'rejected',
-      approvedText: 'alice published answer 2',
-      pendingText: 'alice submitted answer 2',
-      rejectionReason: {
-        code: 'contact_details',
-        messageKey: 'promptRejection.contactDetails',
-        message: expect.any(String),
-        action: 'replace',
-      },
-    });
-    for (const a of own.body.data.promptAnswers.filter((x: { id: string }) => x.id !== id)) expect(a.rejectionReason).toBeNull();
-
-    // Public: the previously approved text, no rejection or pending data anywhere
-    for (const res2 of [
-      await request(app).get(`/v1/profiles/${m.userId}`).set('Authorization', bearer('bob')),
-      await request(app).get('/v1/me/profile/preview').set('Authorization', bearer('alice')),
-    ]) {
-      expect(res2.status).toBe(200);
-      expect(res2.body.data.promptAnswers.map((a: { text: string }) => a.text)).toContain('alice published answer 2');
-      const raw = JSON.stringify(res2.body);
-      for (const leak of ['rejection', 'contact_details', 'promptRejection', 'alice submitted answer 2', 'moderation', 'pending']) {
-        expect(raw).not.toContain(leak);
-      }
-    }
-
-    // Replacing the text resubmits it; the old reason is no longer shown
-    const replace = await request(app).patch(`/v1/me/prompts/${id}`).set('Authorization', bearer('alice'))
-      .send({ expectedRevision: 2, text: 'Coffee ceremony with my grandmother' });
-    expect(replace.status).toBe(200);
-    const after = await request(app).get('/v1/me/profile').set('Authorization', bearer('alice'));
-    expect(after.body.data.promptAnswers.find((a: { id: string }) => a.id === id)).toMatchObject({ state: 'pending', rejectionReason: null });
-    const queue = await request(app).get('/v1/admin/content/prompt-answers').set('Authorization', bearer('mod'));
-    expect(queue.body.data.map((a: { id: string }) => a.id)).toEqual([id]);
-  });
-
-  it('a decision based on a stale revision conflicts with the current revision and writes nothing', async () => {
-    const m = await seedMember('alice', { answers: ['pending'] });
-    const id = m.answerIds[0]!;
-    // Owner edits after the reviewer loaded revision 1
-    await request(app).patch(`/v1/me/prompts/${id}`).set('Authorization', bearer('alice')).send({ expectedRevision: 1, text: 'Changed my mind' });
-
-    const res = await reviewAnswer('mod', id, { decision: 'approve', expectedRevision: 1 });
-    expect(res.status).toBe(409);
-    expect(res.body.error).toMatchObject({ code: 'REVIEW_CONFLICT', currentRevision: 2 });
-    expectContract(res, '/v1/admin/content/prompt-answers/{id}/review', 'post');
-    expect((await getAnswer(id))!).toMatchObject({ state: 'pending', approvedText: null, pendingText: 'Changed my mind' });
-    expect(await audits().countDocuments()).toBe(0);
-
-    // Reviewing what is actually there works
-    expect((await reviewAnswer('mod', id, { decision: 'approve', expectedRevision: 2 })).status).toBe(200);
-    expect((await getAnswer(id))!.approvedText).toBe('Changed my mind');
-  });
-
-  it('validates the decision body', async () => {
-    const m = await seedMember('alice', { answers: ['pending', 'approved'] });
-    for (const body of [
-      { decision: 'approve' },
-      { decision: 'approve', expectedRevision: '1' },
-      { decision: 'reject', expectedRevision: 1 },
-      { decision: 'reject', reason: 'low_quality', expectedRevision: 1 }, // a photo reason
-      { decision: 'approve', expectedRevision: 1, pendingText: 'sneaky' },
-    ]) {
-      expect((await reviewAnswer('mod', m.answerIds[0]!, body)).status, `${JSON.stringify(body)}`).toBe(422);
-    }
-    expect((await reviewAnswer('mod', m.answerIds[1]!, { decision: 'approve', expectedRevision: 1 })).status).toBe(409);
-    expect((await reviewAnswer('mod', 'nope', { decision: 'approve', expectedRevision: 1 })).status).toBe(404);
-    expect(await audits().countDocuments()).toBe(0);
+    expectContract(res, '/v1/admin/audit-log', 'get');
+    expect(res.body.data.map((e: { action: string }) => e.action)).toEqual(['prompt_answer.reject', 'prompt_answer.approve']);
+    expect(res.body.data[0]).toMatchObject({ targetType: 'promptAnswer', reason: 'contact_details', before: { state: 'pending' } });
   });
 });
 
 describe('concurrent decisions', () => {
   it.each([1, 2, 3, 4, 5])('exactly one of several racing photo decisions wins (round %i)', async (round) => {
-    const m = await seedMember(`racer${round}`, { photos: ['approved', 'approved', 'pending'], answers: ['approved', 'approved', 'approved'] });
+    const m = await seedMember(`racer${round}`, { photos: ['approved', 'approved', 'pending'], answers: 3 });
     const id = m.photoIds[2]!;
     const reviewers = ['mod', 'mod2', 'admin', 'admin2', 'mod', 'admin'];
     const results = await Promise.all(reviewers.map((as, i) =>
@@ -762,47 +630,6 @@ describe('concurrent decisions', () => {
     expect(photo.state).toBe(winners[0]!.body.data.state);
     expect(entries[0]!.after).toEqual({ state: photo.state, moderationReason: photo.moderationReason });
     expect((await getUser(`racer${round}`))!.profileReady).toBe(photo.state === 'approved');
-  });
-
-  it.each([1, 2, 3, 4, 5])('exactly one of several racing prompt decisions wins (round %i)', async (round) => {
-    const m = await seedMember(`racer${round}`, { answers: ['pending'] });
-    const id = m.answerIds[0]!;
-    const results = await Promise.all(['mod', 'mod2', 'admin', 'admin2', 'mod2'].map((as, i) =>
-      reviewAnswer(as, id, i % 2 === 0
-        ? { decision: 'approve', expectedRevision: 1 }
-        : { decision: 'reject', reason: 'promotional', expectedRevision: 1 })));
-
-    expect(results.filter((r) => r.status === 200)).toHaveLength(1);
-    expect(results.filter((r) => r.status === 409)).toHaveLength(4);
-    expect(await audits().countDocuments({ targetId: id })).toBe(1);
-    const answer = (await getAnswer(id))!;
-    expect(answer.publishedRevision).toBe(answer.state === 'approved' ? 1 : 0);
-  });
-
-  it('an owner edit racing a review never publishes text the reviewer did not see', async () => {
-    for (let round = 0; round < 5; round++) {
-      const m = await seedMember(`editor${round}`, { answers: ['pending'] });
-      const id = m.answerIds[0]!;
-      const [review, edit] = await Promise.all([
-        reviewAnswer('mod', id, { decision: 'approve', expectedRevision: 1 }),
-        request(app).patch(`/v1/me/prompts/${id}`).set('Authorization', bearer(`editor${round}`)).send({ expectedRevision: 1, text: `unseen ${round}` }),
-      ]);
-      const answer = (await getAnswer(id))!;
-      const audited = await audits().countDocuments({ targetId: id });
-      expect(answer.approvedText).not.toBe(`unseen ${round}`);
-      // Either the review won (the edit then landed as a new submission or lost its
-      // revision race), or the edit won and the review conflicted without writing
-      const reviewWon = review.status === 200;
-      expect({
-        review: review.status,
-        edit: [200, 409].includes(edit.status),
-        approvedText: answer.approvedText,
-        pendingText: reviewWon ? 'n/a' : answer.pendingText,
-        audited,
-      }).toEqual(reviewWon
-        ? { review: 200, edit: true, approvedText: `editor${round} submitted answer 0`, pendingText: 'n/a', audited: 1 }
-        : { review: 409, edit: true, approvedText: null, pendingText: `unseen ${round}`, audited: 0 });
-    }
   });
 
   it('exactly one of several racing suspensions wins', async () => {
@@ -827,13 +654,12 @@ describe('audit atomicity', () => {
     await ensureAdminIndexes(db);
   }
 
-  it('rolls back photo, prompt and account decisions when the audit entry cannot be written', async () => {
-    const m = await seedMember('alice', { status: 'active', ready: true, photos: ['approved', 'approved', 'approved', 'pending'], answers: ['approved', 'approved', 'approved', 'pending'] });
+  it('rolls back photo and account decisions when the audit entry cannot be written', async () => {
+    const m = await seedMember('alice', { status: 'active', ready: true, photos: ['approved', 'approved', 'approved', 'pending'], answers: 3 });
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await breakAuditLog();
     try {
       expect((await reviewPhoto('mod', m.photoIds[3]!, { decision: 'reject', reason: 'low_quality' })).status).toBe(500);
-      expect((await reviewAnswer('mod', m.answerIds[3]!, { decision: 'approve', expectedRevision: 1 })).status).toBe(500);
       expect((await request(app).post(`/v1/admin/users/${m.userId}/suspend`).set('Authorization', bearer('admin'))
         .send({ reason: 'harassment' })).status).toBe(500);
     } finally {
@@ -842,7 +668,6 @@ describe('audit atomicity', () => {
     }
 
     expect((await getPhoto(m.photoIds[3]!))!).toMatchObject({ state: 'pending', moderationReason: null, reviewedAt: null });
-    expect((await getAnswer(m.answerIds[3]!))!).toMatchObject({ state: 'pending', approvedText: null, publishedRevision: 0 });
     expect((await getUser('alice'))!).toMatchObject({ accountStatus: 'active', guardVersion: 1, profileReady: true });
     expect(await audits().countDocuments()).toBe(0);
     expect(revokeRefreshTokens).not.toHaveBeenCalled();
@@ -855,7 +680,7 @@ describe('audit atomicity', () => {
   });
 
   it('leaves no audit entry and no decision when the transaction aborts after the entry was written', async () => {
-    const m = await seedMember('alice', { status: 'active', ready: true, photos: ['approved', 'approved', 'approved', 'pending'], answers: ['approved', 'approved', 'approved', 'pending'] });
+    const m = await seedMember('alice', { status: 'active', ready: true, photos: ['approved', 'approved', 'approved', 'pending'], answers: 3 });
     const written: string[] = [];
     const failing = createApp({
       mongoCheck: async () => true,
@@ -873,38 +698,34 @@ describe('audit atomicity', () => {
     try {
       expect((await request(failing).post(`/v1/admin/content/photos/${m.photoIds[3]}/review`).set('Authorization', bearer('mod'))
         .send({ decision: 'approve' })).status).toBe(500);
-      expect((await request(failing).post(`/v1/admin/content/prompt-answers/${m.answerIds[3]}/review`).set('Authorization', bearer('mod'))
-        .send({ decision: 'reject', reason: 'promotional', expectedRevision: 1 })).status).toBe(500);
       expect((await request(failing).post(`/v1/admin/users/${m.userId}/suspend`).set('Authorization', bearer('admin'))
         .send({ reason: 'harassment' })).status).toBe(500);
     } finally {
       errors.mockRestore();
     }
 
-    expect(written).toEqual(['photo.approve', 'prompt_answer.reject', 'account.suspend']);
+    expect(written).toEqual(['photo.approve', 'account.suspend']);
     expect(await audits().countDocuments()).toBe(0);
     expect((await getPhoto(m.photoIds[3]!))!.state).toBe('pending');
-    expect((await getAnswer(m.answerIds[3]!))!).toMatchObject({ state: 'pending', publishedRevision: 0 });
-    expect((await getAnswer(m.answerIds[3]!))!.rejectionReason ?? null).toBeNull();
     expect((await getUser('alice'))!).toMatchObject({ accountStatus: 'active', guardVersion: 1 });
     expect(revokeRefreshTokens).not.toHaveBeenCalled();
   });
 
-  it('server logs never contain tokens, answer text or account details', async () => {
-    const m = await seedMember('alice', { answers: ['pending'] });
+  it('server logs never contain tokens, staff notes or account details', async () => {
+    const m = await seedMember('alice', { photos: ['pending'], answers: 1 });
     const lines: string[] = [];
     const capture = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
     const spies = (['log', 'info', 'warn', 'error'] as const).map((level) => vi.spyOn(console, level).mockImplementation(capture));
     await breakAuditLog();
     try {
-      await reviewAnswer('mod', m.answerIds[0]!, { decision: 'approve', expectedRevision: 1, note: 'private staff note' });
+      await reviewPhoto('mod', m.photoIds[0]!, { decision: 'reject', reason: 'low_quality', note: 'private staff note' });
     } finally {
       await repairAuditLog();
       spies.forEach((s) => s.mockRestore());
     }
-    await reviewAnswer('mod', m.answerIds[0]!, { decision: 'approve', expectedRevision: 1 });
+    await reviewPhoto('mod', m.photoIds[0]!, { decision: 'reject', reason: 'low_quality', note: 'private staff note' });
     const output = lines.join('\n');
-    for (const secret of ['token-mod', 'alice submitted answer 0', 'private staff note', '1994-05-12', 'uid-alice', 'staff-mod']) {
+    for (const secret of ['token-mod', 'alice answer 0', 'private staff note', '1994-05-12', 'uid-alice', 'staff-mod']) {
       expect(output).not.toContain(secret);
     }
   });
@@ -996,7 +817,7 @@ describe('account suspension and restore', () => {
     expect(profile).toMatchObject({ displayName: 'alice', revision: 1 });
     const answers = await db.collection<PromptAnswerDocument>('promptAnswers').find({ ownerId: m.userId }).toArray();
     expect(answers).toHaveLength(3);
-    expect(answers.every((a) => a.revision === 1 && a.pendingText === null)).toBe(true);
+    expect(answers.every((a) => a.revision === 1 && a.publishedRevision === 1 && a.approvedText === `alice answer ${a.slot}`)).toBe(true);
     expect((await getUser('alice'))!).toMatchObject({ accountStatus: 'suspended', profileReady: false });
   });
 
@@ -1069,7 +890,8 @@ describe('reason catalog and audit queries', () => {
     expectContract(res, '/v1/admin/reasons', 'get');
     const codes = (list: { code: string }[]) => list.map((r) => r.code);
     expect(codes(res.body.data.photoRejection)).toContain('contact_details');
-    expect(codes(res.body.data.promptAnswerRejection)).toEqual(['contact_details', 'sexual_content', 'hateful_or_harassing', 'promotional', 'community_guidelines']);
+    // Prompt answers publish on save (D-13): there is nothing to reject them with
+    expect(res.body.data).not.toHaveProperty('promptAnswerRejection');
     expect(codes(res.body.data.accountSuspension)).toContain('harassment');
     expect(codes(res.body.data.accountRestore)).toContain('appeal_upheld');
   });

@@ -11,7 +11,7 @@ import {
   validateCity, validateVisibility, validateBio, validatePromptAnswer,
   validatePromptId, validateHeight, validateOptionalText, validateLanguages, type FieldError,
 } from './validation.js';
-import { toSelfProfileDTO, loadPublicProfiles } from './dto.js';
+import { toSelfProfileDTO, toSelfPromptAnswerDTO, loadPublicProfiles } from './dto.js';
 import { recomputeReadiness } from './readiness-service.js';
 import { findCity } from '../catalogs/data.js';
 import { isDuplicateKeyError } from '../../indexes.js';
@@ -225,7 +225,7 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
 
   /**
    * GET /v1/me/profile
-   * Owner view: every own field, visibility settings and answers awaiting review.
+   * Owner view: every own field, visibility settings and prompt answers.
    */
   router.get('/v1/me/profile', requireAuth, async (req: Request, res: Response) => {
     const user = await loadOwnAccount(users, req, res);
@@ -243,7 +243,7 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
   /**
    * GET /v1/me/profile/preview
    * Self preview with public projection semantics: exactly what others would
-   * see, so hidden fields and unreviewed answers are absent.
+   * see, so hidden fields and photos still in review are absent.
    */
   router.get('/v1/me/profile/preview', requireAuth, async (req: Request, res: Response) => {
     const user = await loadOwnAccount(users, req, res);
@@ -261,6 +261,7 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
   /**
    * POST /v1/me/prompts
    * Add a prompt answer. At most MAX_PROMPT_ANSWERS, one per distinct prompt.
+   * It publishes immediately (D-13) and counts toward readiness.
    */
   router.post('/v1/me/prompts', requireAuth, async (req: Request, res: Response) => {
     const user = await loadOwnAccount(users, req, res);
@@ -314,19 +315,18 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
         return;
       }
 
-      // New answers wait for review; nothing is published until it is approved
+      // No pre-approval (D-13): the answer is public at content version 1 right away
+      const now = new Date();
       const candidate: PromptAnswerDocument = {
         _id: uuidv4(),
         ownerId: user._id,
         promptId,
         slot,
-        approvedText: null,
-        pendingText: normalizeWhitespace(body['text'] as string),
-        state: 'pending',
+        approvedText: normalizeWhitespace(body['text'] as string),
         revision: 1,
-        publishedRevision: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        publishedRevision: 1,
+        createdAt: now,
+        updatedAt: now,
       };
       try {
         await promptAnswers.insertOne(candidate);
@@ -348,15 +348,15 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
     await recomputeReadiness(db, user._id);
 
     res.status(201).json({
-      data: { id: answer._id, promptId: answer.promptId, state: answer.state, revision: answer.revision },
+      data: toSelfPromptAnswerDTO(answer),
       meta: { requestId: req.requestId },
     });
   });
 
   /**
    * PATCH /v1/me/prompts/:id
-   * Submit replacement text for review. Approved text stays published until
-   * review accepts the replacement, so readiness is unaffected.
+   * Replace an answer's text. The new text publishes immediately (D-13) under
+   * a new content version, so likes on the old words show "this item changed".
    */
   router.patch('/v1/me/prompts/:id', requireAuth, async (req: Request, res: Response) => {
     const user = await loadOwnAccount(users, req, res);
@@ -389,35 +389,50 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
       return;
     }
 
-    const revision = answer.revision + 1;
-    // Compare-and-set on revision so concurrent edits cannot both win
+    const sendConflict = (currentRevision: number) => res.status(409).json({
+      error: {
+        code: 'REVISION_CONFLICT',
+        message: 'This answer has been modified. Please refresh and try again.',
+        currentRevision,
+        retryable: true,
+      },
+      requestId: req.requestId,
+    });
+    if (expectedRevision !== answer.revision) {
+      sendConflict(answer.revision);
+      return;
+    }
+
+    // Re-saving the same words is not new content: likes on it stay current
+    const text = normalizeWhitespace(body['text'] as string);
+    const edited: PromptAnswerDocument = {
+      ...answer,
+      approvedText: text,
+      revision: answer.revision + 1,
+      publishedRevision: text === answer.approvedText ? answer.publishedRevision : answer.publishedRevision + 1,
+      updatedAt: new Date(),
+    };
+    // Compare-and-set on the version read, so concurrent edits cannot both win
     const result = await promptAnswers.updateOne(
-      { _id: answer._id, ownerId: user._id, revision: expectedRevision as number },
+      { _id: answer._id, ownerId: user._id, revision: answer.revision, publishedRevision: answer.publishedRevision },
       {
         $set: {
-          pendingText: normalizeWhitespace(body['text'] as string),
-          state: 'pending',
-          revision,
-          updatedAt: new Date(),
+          approvedText: edited.approvedText,
+          revision: edited.revision,
+          publishedRevision: edited.publishedRevision,
+          updatedAt: edited.updatedAt,
         },
       },
     );
     if (result.matchedCount === 0) {
       const current = await promptAnswers.findOne({ _id: answer._id });
-      res.status(409).json({
-        error: {
-          code: 'REVISION_CONFLICT',
-          message: 'This answer has been modified. Please refresh and try again.',
-          currentRevision: current?.revision ?? answer.revision,
-          retryable: true,
-        },
-        requestId: req.requestId,
-      });
+      sendConflict(current?.revision ?? answer.revision);
       return;
     }
+    await recomputeReadiness(db, user._id);
 
     res.json({
-      data: { id: answer._id, state: 'pending', revision },
+      data: toSelfPromptAnswerDTO(edited),
       meta: { requestId: req.requestId },
     });
   });

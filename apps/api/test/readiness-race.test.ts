@@ -76,7 +76,7 @@ async function seedReadyToActivate(status: AccountStatusType = 'onboarding') {
     await db.collection('photos').insertOne({ _id: `photo-${slot}`, ownerId: USER_ID, state: 'approved', order: slot });
     await db.collection('promptAnswers').insertOne({
       _id: `answer-${slot}`, ownerId: USER_ID, promptId: `prompt-${slot}`, slot,
-      approvedText: `answer ${slot}`, pendingText: null, state: 'approved', revision: 1, publishedRevision: 1,
+      approvedText: `answer ${slot}`, revision: 1, publishedRevision: 1,
     });
   }
 }

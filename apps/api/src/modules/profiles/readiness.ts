@@ -11,7 +11,7 @@
  * 7. City/state set
  * 8. Intention set
  * 9. At least 3 approved photos (checked via count)
- * 10. At least 3 approved prompt answers (checked via count)
+ * 10. At least 3 published prompt answers (answers publish on save, D-13; checked via count)
  * 11. No active safety restriction
  */
 

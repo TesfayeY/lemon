@@ -140,7 +140,7 @@ paths:
 
   /v1/me/profile:
     get:
-      summary: Owner view of the profile draft, visibility settings and answers awaiting review
+      summary: Owner view of the profile draft, visibility settings and prompt answers
       responses:
         '200':
           description: Own profile
@@ -197,7 +197,10 @@ paths:
 
   /v1/me/prompts:
     post:
-      summary: Submit an answer to a prompt; it is held for review
+      summary: Add an answer to a prompt; it publishes immediately
+      description: |
+        No pre-approval (D-13): the answer is in the public projection at once,
+        at `contentVersion` 1, and counts toward readiness.
       requestBody:
         required: true
         content:
@@ -210,7 +213,7 @@ paths:
                 text: { $ref: '#/components/schemas/PromptText' }
       responses:
         '201':
-          description: Answer submitted
+          description: Answer saved and published
           content:
             application/json:
               schema:
@@ -218,15 +221,7 @@ paths:
                 additionalProperties: false
                 required: [data, meta]
                 properties:
-                  data:
-                    type: object
-                    additionalProperties: false
-                    required: [id, promptId, state, revision]
-                    properties:
-                      id: { type: string }
-                      promptId: { type: string }
-                      state: { $ref: '#/components/schemas/ReviewState' }
-                      revision: { type: integer, minimum: 1 }
+                  data: { $ref: '#/components/schemas/SelfPromptAnswer' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/AccountRestricted' }
@@ -242,7 +237,12 @@ paths:
         required: true
         schema: { type: string }
     patch:
-      summary: Submit replacement text for review; approved text stays published meanwhile
+      summary: Replace an answer's text; the new text publishes immediately
+      description: |
+        Compare-and-set on `expectedRevision`. The new text replaces the
+        published text at once (D-13) and `contentVersion` goes up by one, so
+        likes on the old words show "this item changed". Saving the same words
+        again bumps `revision` only.
       requestBody:
         required: true
         content:
@@ -255,7 +255,7 @@ paths:
                 text: { $ref: '#/components/schemas/PromptText' }
       responses:
         '200':
-          description: Replacement submitted
+          description: Answer replaced and published
           content:
             application/json:
               schema:
@@ -263,14 +263,7 @@ paths:
                 additionalProperties: false
                 required: [data, meta]
                 properties:
-                  data:
-                    type: object
-                    additionalProperties: false
-                    required: [id, state, revision]
-                    properties:
-                      id: { type: string }
-                      state: { $ref: '#/components/schemas/ReviewState' }
-                      revision: { type: integer, minimum: 1 }
+                  data: { $ref: '#/components/schemas/SelfPromptAnswer' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/AccountRestricted' }
@@ -755,70 +748,6 @@ paths:
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
-  /v1/admin/content/prompt-answers:
-    get:
-      summary: Pending prompt answer queue, oldest submission first (moderator)
-      description: An owner edit is a new submission and moves the answer to the back.
-      parameters:
-        - $ref: '#/components/parameters/AdminCursor'
-        - $ref: '#/components/parameters/AdminLimit'
-      responses:
-        '200':
-          description: One page of pending answers
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AdminPromptQueueResponse' }
-        '400': { $ref: '#/components/responses/InvalidCursor' }
-        '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '422': { $ref: '#/components/responses/ValidationError' }
-        '429': { $ref: '#/components/responses/RateLimited' }
-
-  /v1/admin/content/prompt-answers/{id}:
-    parameters:
-      - { name: id, in: path, required: true, schema: { type: string } }
-    get:
-      summary: One prompt answer with its published and pending text (moderator)
-      responses:
-        '200':
-          description: Prompt answer review detail
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AdminPromptDetailResponse' }
-        '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '429': { $ref: '#/components/responses/RateLimited' }
-
-  /v1/admin/content/prompt-answers/{id}/review:
-    parameters:
-      - { name: id, in: path, required: true, schema: { type: string } }
-    post:
-      summary: Approve or reject a pending prompt answer (moderator)
-      description: |
-        `expectedRevision` is the answer revision the reviewer saw. Approve
-        publishes the pending text and increments publishedRevision. Reject
-        keeps any published text live and shows the owner the reason. A stale
-        revision or an already-decided answer gets 409 REVIEW_CONFLICT with
-        `currentRevision`, and nothing is written.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AdminPromptReviewRequest' }
-      responses:
-        '200':
-          description: Decision committed and audited
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AdminPromptDecisionResponse' }
-        '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/ValidationError' }
-        '429': { $ref: '#/components/responses/RateLimited' }
-
   /v1/admin/users/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -903,7 +832,7 @@ paths:
       summary: Audit history of one target, oldest first (admin)
       description: Always scoped to a single target; there is no bulk export.
       parameters:
-        - { name: targetType, in: query, required: true, schema: { type: string, enum: [photo, promptAnswer, user] } }
+        - { name: targetType, in: query, required: true, description: "`promptAnswer` finds legacy prompt review entries (before D-13)", schema: { type: string, enum: [photo, promptAnswer, user] } }
         - { name: targetId, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
       responses:
         '200':
@@ -1282,7 +1211,7 @@ components:
         id: { type: string }
         promptId: { type: string }
         promptText: { type: string }
-        text: { type: string, description: Published (approved) text only }
+        text: { type: string, description: The published text }
         contentVersion:
           type: integer
           minimum: 1
@@ -1292,22 +1221,25 @@ components:
 
     SelfPromptAnswer:
       type: object
-      description: The owner's view of an answer, including a submission awaiting review
+      description: |
+        The owner's view of an answer. Answers publish on save (D-13), so
+        `text` and `contentVersion` are exactly what other people see; there
+        is no review state.
       additionalProperties: false
-      required: [id, promptId, promptText, approvedText, pendingText, state, revision]
+      required: [id, promptId, promptText, text, revision, contentVersion]
       properties:
         id: { type: string }
         promptId: { type: string }
         promptText: { type: string }
-        approvedText: { type: [string, 'null'] }
-        pendingText: { type: [string, 'null'] }
-        state: { $ref: '#/components/schemas/ReviewState' }
-        revision: { type: integer, minimum: 1 }
-        rejectionReason:
-          description: Owner-only; set only while state is rejected
-          oneOf:
-            - { $ref: '#/components/schemas/PromptRejection' }
-            - { type: 'null' }
+        text: { type: string, description: The published text }
+        revision:
+          type: integer
+          minimum: 1
+          description: Owner edit revision; send it back as `expectedRevision`
+        contentVersion:
+          type: integer
+          minimum: 1
+          description: Version of the published text, as in `PromptAnswer`
 
     SelfProfile:
       type: object
@@ -1782,19 +1714,6 @@ components:
             requestId: { type: string }
             nextCursor: { type: [string, 'null'] }
 
-    # --- Owner-only prompt rejection (SelfPromptAnswer.rejectionReason) ---
-
-    PromptRejection:
-      type: object
-      description: Why the owner's latest submission was rejected. Owner-only; never in public DTOs.
-      additionalProperties: false
-      required: [code, messageKey, message, action]
-      properties:
-        code: { type: string, enum: [contact_details, sexual_content, hateful_or_harassing, promotional, community_guidelines] }
-        messageKey: { type: string, description: Localization key for the respectful explanation }
-        message: { type: string, description: English fallback copy }
-        action: { type: string, enum: [replace] }
-
     # --- Staff API ---
 
     StaffRole:
@@ -1883,10 +1802,9 @@ components:
         data:
           type: object
           additionalProperties: false
-          required: [photoRejection, promptAnswerRejection, accountSuspension, accountRestore]
+          required: [photoRejection, accountSuspension, accountRestore]
           properties:
             photoRejection: { type: array, items: { $ref: '#/components/schemas/AdminReasonOption' } }
-            promptAnswerRejection: { type: array, items: { $ref: '#/components/schemas/AdminReasonOption' } }
             accountSuspension: { type: array, items: { $ref: '#/components/schemas/AdminReasonOption' } }
             accountRestore: { type: array, items: { $ref: '#/components/schemas/AdminReasonOption' } }
         meta: { $ref: '#/components/schemas/Meta' }
@@ -1957,16 +1875,6 @@ components:
         reason: { type: [string, 'null'], description: Required for reject; catalog code }
         note: { $ref: '#/components/schemas/AdminNote' }
 
-    AdminPromptReviewRequest:
-      type: object
-      additionalProperties: false
-      required: [decision, expectedRevision]
-      properties:
-        decision: { type: string, enum: [approve, reject] }
-        reason: { type: [string, 'null'], description: Required for reject; promptAnswerRejection code }
-        note: { $ref: '#/components/schemas/AdminNote' }
-        expectedRevision: { type: integer, minimum: 1 }
-
     AdminPhotoDecisionResponse:
       type: object
       additionalProperties: false
@@ -1982,76 +1890,6 @@ components:
             rejectionReason:
               oneOf:
                 - { $ref: '#/components/schemas/PhotoRejection' }
-                - { type: 'null' }
-            auditId: { type: string }
-        meta: { $ref: '#/components/schemas/Meta' }
-
-    AdminPromptQueueResponse:
-      type: object
-      additionalProperties: false
-      required: [data, meta]
-      properties:
-        data:
-          type: array
-          maxItems: 50
-          items:
-            type: object
-            additionalProperties: false
-            required: [id, ownerId, promptId, promptText, pendingText, hasPublishedText, revision, submittedAt]
-            properties:
-              id: { type: string }
-              ownerId: { type: string }
-              promptId: { type: string }
-              promptText: { type: string }
-              pendingText: { type: string }
-              hasPublishedText: { type: boolean }
-              revision: { type: integer, minimum: 1 }
-              submittedAt: { type: string, format: date-time }
-        meta: { $ref: '#/components/schemas/AdminPageMeta' }
-
-    AdminPromptDetailResponse:
-      type: object
-      additionalProperties: false
-      required: [data, meta]
-      properties:
-        data:
-          type: object
-          additionalProperties: false
-          required: [id, state, ownerId, promptId, promptText, pendingText, approvedText, revision, publishedRevision, rejectionReason, submittedAt, owner]
-          properties:
-            id: { type: string }
-            state: { $ref: '#/components/schemas/ReviewState' }
-            ownerId: { type: string }
-            promptId: { type: string }
-            promptText: { type: string }
-            pendingText: { type: [string, 'null'] }
-            approvedText: { type: [string, 'null'] }
-            revision: { type: integer, minimum: 1 }
-            publishedRevision: { type: integer, minimum: 0 }
-            rejectionReason:
-              oneOf:
-                - { $ref: '#/components/schemas/PromptRejection' }
-                - { type: 'null' }
-            submittedAt: { type: string, format: date-time }
-            owner: { $ref: '#/components/schemas/AdminOwnerContext' }
-        meta: { $ref: '#/components/schemas/Meta' }
-
-    AdminPromptDecisionResponse:
-      type: object
-      additionalProperties: false
-      required: [data, meta]
-      properties:
-        data:
-          type: object
-          additionalProperties: false
-          required: [id, state, publishedRevision, rejectionReason, auditId]
-          properties:
-            id: { type: string }
-            state: { type: string, enum: [approved, rejected] }
-            publishedRevision: { type: integer, minimum: 0 }
-            rejectionReason:
-              oneOf:
-                - { $ref: '#/components/schemas/PromptRejection' }
                 - { type: 'null' }
             auditId: { type: string }
         meta: { $ref: '#/components/schemas/Meta' }
@@ -2118,6 +1956,10 @@ components:
               actorRole: { $ref: '#/components/schemas/StaffRole' }
               action:
                 type: string
+                description: |
+                  `prompt_answer.*` (target type `promptAnswer`) are legacy: prompt
+                  review ended with D-13, nothing writes them now, but earlier
+                  entries remain readable.
                 enum: [photo.approve, photo.reject, prompt_answer.approve, prompt_answer.reject, account.suspend, account.restore]
               targetType: { type: string, enum: [photo, promptAnswer, user] }
               targetId: { type: string }

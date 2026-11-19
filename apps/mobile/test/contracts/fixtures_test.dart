@@ -37,18 +37,22 @@ void main() {
       expect(account.toJson(), json);
     });
 
-    test('self profile with answers awaiting review', () {
+    test('self profile with a published answer', () {
       final json = dataOf('self-profile.json');
       final profile = SelfProfile.fromJson(json);
 
       expect(profile.hometownDisplay, FieldVisibility.private);
       expect(profile.languages, ['tigrinya', 'english']);
       expect(profile.genderSelfDescription, isNull);
-      final edited = profile.promptAnswers.first;
-      expect(edited.state, ReviewState.pending);
-      expect(edited.approvedText, 'The full coffee ceremony, three rounds.');
-      expect(edited.pendingText, isNotNull);
-      expect(profile.promptAnswers.last.approvedText, isNull);
+      final answer = profile.promptAnswers.single;
+      expect(answer.text, 'The full coffee ceremony, three rounds.');
+      expect(answer.revision, 2);
+      expect(answer.contentVersion, 1);
+      // The owner sees the same published answer as everyone else
+      final public = PublicProfile.fromJson(dataOf('public-profile.json'));
+      expect(public.promptAnswers.single.id, answer.id);
+      expect(public.promptAnswers.single.text, answer.text);
+      expect(public.promptAnswers.single.contentVersion, answer.contentVersion);
       expect(profile.toJson(), json);
     });
 

@@ -33,17 +33,16 @@ void main() {
     await completePrompts(tester);
     await skipAbout(tester);
 
-    // Content is waiting for human review, so the server says "not ready"
+    // Photos wait for human review, so the server says "not ready". Prompt
+    // answers published on save (D-13) and are no longer missing.
     expect(find.text('Almost there'), findsOneWidget);
     expect(find.text('Three approved photos'), findsOneWidget);
-    expect(find.text('Three approved prompt answers'), findsOneWidget);
+    expect(find.text('Three prompt answers'), findsNothing);
     expect(find.text('Start exploring'), findsNothing);
     expect(backend.accountStatus, 'onboarding');
 
-    // A reviewer approves everything; the client only learns this by asking
-    backend
-      ..approveAllPhotos()
-      ..approveAllPrompts();
+    // A reviewer approves the photos; the client only learns this by asking
+    backend.approveAllPhotos();
     await tapText(tester, 'Check again');
     expect(find.text("You're all set"), findsOneWidget);
     expect(backend.accountStatus, 'active');

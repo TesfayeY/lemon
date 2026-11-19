@@ -13,11 +13,8 @@ import { checkReadiness, type ReadinessCheck } from './readiness.js';
 export async function evaluateReadiness(db: Db, user: UserDocument): Promise<ReadinessCheck> {
   const profile = await db.collection<ProfileDocument>('profiles').findOne({ userId: user._id });
   const prefs = await db.collection<PreferencesDocument>('preferences').findOne({ userId: user._id });
-  // Only published text counts; an answer awaiting first review does not
-  const approvedAnswers = await db.collection<PromptAnswerDocument>('promptAnswers').countDocuments({
-    ownerId: user._id,
-    approvedText: { $ne: null },
-  });
+  // Answers publish on save (D-13), so every stored answer is published
+  const approvedAnswers = await db.collection<PromptAnswerDocument>('promptAnswers').countDocuments({ ownerId: user._id });
 
   return checkReadiness(user, profile ?? createEmptyProfile(user._id), {
     interests: prefs?.acceptedGenderCategories.length ?? 0,

@@ -50,23 +50,10 @@ const decisionBody = z.object({
   }
 });
 
-const promptDecisionBody = z.object({
-  decision: z.enum(['approve', 'reject']),
-  reason: z.string().nullish().transform((v) => v ?? null),
-  note,
-  expectedRevision: z.number().int().min(1),
-}).strict().superRefine((body, ctx) => {
-  if (body.decision === 'reject' && !body.reason) {
-    ctx.addIssue({ code: 'custom', path: ['reason'], message: 'A rejection needs a reason from the catalog' });
-  }
-  if (body.decision === 'approve' && body.reason) {
-    ctx.addIssue({ code: 'custom', path: ['reason'], message: 'Reasons apply to rejections only; use note for comments' });
-  }
-});
-
 const suspendBody = z.object({ reason: z.enum(SUSPENSION_REASON_CODES), note }).strict();
 const restoreBody = z.object({ reason: z.enum(RESTORE_REASON_CODES), note }).strict();
 
+// 'promptAnswer' finds entries from prompt review, which D-13 removed; they stay readable
 const auditQuery = z.object({
   targetType: z.enum(['photo', 'promptAnswer', 'user']),
   targetId: z.string().min(1).max(128),
@@ -225,35 +212,6 @@ export function createAdminRoutes(
     }
     const { staff } = req as StaffRequest;
     const result = await service.decidePhoto(staff, param(req, 'id'), parsed.data, req.requestId);
-    res.json({ data: result, meta: { requestId: req.requestId } });
-  }));
-
-  // --- Prompt answers ---
-
-  router.get('/v1/admin/content/prompt-answers', ...guard('content.review'), handle(async (req, res) => {
-    const page = readPage(req, res);
-    if (!page) return;
-    const { items, nextCursor } = await service.listPendingPromptAnswers(page.cursor, page.limit);
-    res.json({ data: items, meta: { requestId: req.requestId, nextCursor } });
-  }));
-
-  router.get('/v1/admin/content/prompt-answers/:id', ...guard('content.review'), handle(async (req, res) => {
-    const answer = await service.getPromptAnswer(param(req, 'id'));
-    if (!answer) {
-      sendError(req, res, 404, 'NOT_FOUND', 'Prompt answer not found');
-      return;
-    }
-    res.json({ data: answer, meta: { requestId: req.requestId } });
-  }));
-
-  router.post('/v1/admin/content/prompt-answers/:id/review', ...guard('content.review'), handle(async (req, res) => {
-    const parsed = promptDecisionBody.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      sendValidation(req, res, parsed.error);
-      return;
-    }
-    const { staff } = req as StaffRequest;
-    const result = await service.decidePromptAnswer(staff, param(req, 'id'), parsed.data, req.requestId);
     res.json({ data: result, meta: { requestId: req.requestId } });
   }));
 

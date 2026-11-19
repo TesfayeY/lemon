@@ -2,10 +2,9 @@
  * Fictional development profiles. Every person here is invented; never add
  * real people, photos or contact details.
  *
- * Seeded prompt answers are stored as already published fixture content so
- * profiles render in local builds. This does not imply review exists: real
- * submissions always start pending. Seeded accounts stay not-ready until
- * photos exist (Phase 05).
+ * Seeded prompt answers are published, exactly as saving them through the API
+ * would leave them (answers publish on save, D-13). Seeded accounts stay
+ * not-ready until photos exist (Phase 05).
  */
 
 import { createNewUser, type UserDocument } from '../modules/auth/account.js';
@@ -161,8 +160,6 @@ export function buildSeedDocuments(): SeedDocuments {
         promptId,
         slot: j,
         approvedText: text,
-        pendingText: null,
-        state: 'approved',
         revision: 1,
         publishedRevision: 1,
         createdAt: now,
