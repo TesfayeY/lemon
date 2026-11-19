@@ -71,6 +71,7 @@ function assertNoEmulatorsInProduction(config: Env): void {
   if (config.NODE_ENV !== 'production') return;
   const present = EMULATOR_HOST_VARS.filter((name) => config[name] !== undefined);
   if (present.length > 0) {
-    throw new Error(`Firebase emulator settings are not allowed in production. Unset: ${present.join(', ')}`);
+    // ConfigError: the message names variables only, so startup logs it in full
+    throw new ConfigError(`Firebase emulator settings are not allowed in production. Unset: ${present.join(', ')}`);
   }
 }

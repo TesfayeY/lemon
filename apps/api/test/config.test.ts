@@ -88,6 +88,8 @@ describe('loadConfig', () => {
     it('refuses the Auth emulator host, which would accept unsigned tokens', () => {
       process.env['FIREBASE_AUTH_EMULATOR_HOST'] = '127.0.0.1:9099';
       expect(() => loadConfig()).toThrow('Firebase emulator settings are not allowed in production. Unset: FIREBASE_AUTH_EMULATOR_HOST');
+      // A ConfigError, so startup logs the variable names instead of only the error type
+      expect(() => loadConfig()).toThrow(ConfigError);
     });
 
     it('refuses the Firestore emulator host', () => {
