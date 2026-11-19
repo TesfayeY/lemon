@@ -29,10 +29,18 @@ Shared files have small additive edits only: `src/index.ts` (route), `src/indexe
   - An unexpired pass. The query always checks `expiresAt > now`, so a pass that has expired but that TTL hasn't deleted yet never hides anyone.
   - A pluggable `PairExclusionProvider` for blocks, terminal pairs, report hides and matches. The default `noPairExclusions` excludes nobody.
 - **Sessions:**
-  - `GET /v1/discovery` without a cursor builds a bounded session: an index-backed pre-filter on the viewer's side, the full mutual check, then a seeded Fisher–Yates shuffle. Sessions hold at most 200 IDs and last 30 minutes.
-  - Each session stores the seed, the viewer's preferences revision and the viewer's residence city. Changing either invalidates the session.
+  - `GET /v1/discovery` without a cursor builds a bounded session. Sessions hold at most 200 IDs and last 30 minutes. The build has three steps:
+    1. One aggregation on `profiles` (`candidatePoolPipeline`) reads at most `poolScanLimit` (2,000) candidates:
+       - It applies the viewer-side pre-filter (gender, scope, US) on the profile indexes.
+       - In the same query, before the limit, it leaves out the viewer and everyone their likes and passes hide: sent likes in any state, received pending or declined likes, and unexpired passes.
+       - It joins `users` on `_id` and drops accounts that can't be shown: not active, not profile-ready, or paused.
+       - So hidden and unshowable people never use up the budget.
+    2. The full mutual check (`eligibleAmong`) runs on what was read, including the provider exclusions.
+    3. A seeded Fisher–Yates shuffle sets the order.
+  - If more candidates match than the budget, the aggregation keeps the `poolScanLimit` with the lowest hash of (user ID, session seed), using `$toHashedIndexKey`. Each new session has a new random seed, so it reads a different, roughly uniform sample, and nobody stays past the cutoff. If everyone fits, every seed reads the same whole set, so the result is exactly the seeded shuffle of the full pool.
+  - Each session stores the seed, the viewer's preferences revision and the viewer's residence city. The seed decides both which candidates are read and their order. Changing the preferences or the city invalidates the session.
   - The seed and clock can be injected.
-  - Nothing is ranked. Order is a uniform permutation.
+  - Nothing is ranked. Order is a uniform permutation, and the hash sample depends only on the user ID and the seed.
 - **Signed cursors:**
   - Format: `v1.<payload>.<HMAC-SHA256>`, where the payload is `{sessionId, nextOffset, expiresAt}`. The secret comes from `DISCOVERY_CURSOR_SECRET`.
   - Malformed, tampered and other people's cursors all get the same 400 `INVALID_CURSOR`.
@@ -55,10 +63,18 @@ Shared files have small additive edits only: `src/index.ts` (route), `src/indexe
 - **Indexes** (`ensureDiscoveryIndexes`):
   - `passes {viewerId, candidateId}` unique, and a TTL on `passes.expiresAt`.
   - A TTL on `discoverySessions.expiresAt`.
-  - `profiles {genderIdentity, cityId}` and `profiles {genderIdentity, stateCode}` for the candidate pre-filter.
-  - Tests use `explain` to confirm the pre-filters and pass lookups use these indexes.
+  - `profiles {genderIdentity, cityId}` and `profiles {genderIdentity, stateCode}` for the candidate pre-filter. Nationwide uses the `genderIdentity` prefix.
+  - The session pool needs no index of its own:
+    - The `users` join is an indexed loop join on `_id`.
+    - The viewer's sent likes use `likes {fromUserId, toUserId}` and received likes use `likes {toUserId, state, createdAt}`, both owned by the likes module.
+    - Active passes use the `passes {viewerId, candidateId}` prefix.
+  - Tests use `explain` on the actual pool aggregation, for city, metro, state and nationwide. They confirm a profile index, the `_id` join and no collection scan. Other explain tests cover the like and pass lists and the per-page pass check.
 - **`isDiscoverable(viewer, candidateId)`:** exported from the service for rechecking discovery-context actions.
-- **Tests:** 107 in total, 59 pure rule tests and 48 integration tests against the local replica set, each run in an isolated `lemon_test_discovery_<pid>_<ts>` database that is dropped afterwards.
+- **Tests:** 114 in total: 59 pure rule tests, and 55 integration tests against the local replica set. Each integration run uses an isolated `lemon_test_discovery_<pid>_<ts>` database that is dropped afterwards.
+  - The pool tests use small `poolScanLimit` and `maxSessionSize` values. Hidden people are seeded first and sort first by ID, so the old read in index order would have used the budget on them.
+  - They prove that liked, passed, declined, inactive, not-ready and paused profiles don't use up the budget. A viewer who passed many people still gets the remaining eligible ones, not `empty`.
+  - They prove that an oversubscribed pool reads different subsets across seeds and that everyone is eventually read, while the same seed reproduces the same subset.
+  - They prove that a pool that fits is exactly `stableShuffle(sorted ids, seed)`.
 
 ## Endpoints
 
@@ -93,13 +109,17 @@ Shared files have small additive edits only: `src/index.ts` (route), `src/indexe
 - **Paused viewers** can't browse (403 `DISCOVERY_PAUSED`). Pausing hides you from others, and §4.4 disables sending likes while paused, so browsing would be one-sided.
 - **Viewer moving city** invalidates the session, like a preferences change.
 - **Incoming likes:** pending and declined ones hide the liker (owner decision, 2026-11-10). Accepted likes become matches, which the Phase 09 provider will exclude.
-- **Pool bound:** a session build reads at most 2,000 pre-filtered profiles in index order before the mutual check and shuffle. At pilot density this is the whole pool. For very large pools the sample leans towards the index order (see Phase 17).
+- **Pool bound:** a session build reads at most 2,000 showable, not-yet-acted-on candidates before the mutual check and shuffle. At pilot density this is the whole pool.
+  - A larger pool is sampled per session seed, as described under Sessions.
+  - The `$nin` list of people the viewer acted on stays small. Sent likes are capped per day, passes expire after the cooldown, and each person can have at most one like to the viewer.
+  - Cost: a sampled build reads every matching profile and its `users` entry, so the sample is uniform, then keeps the top 2,000 by hash in a bounded sort. The old build stopped after 2,000 profiles in index order (see Phase 17).
 
 ## Follow-ups
 
 - **Phase 09 (matches):**
   - Add a provider that excludes active matches and terminal pairs from `pairs`, in both directions.
   - Pass it with `combineExclusions` in `src/index.ts`, through the `overrides` argument of `createDiscoveryRoutes`.
+  - Provider exclusions only answer per batch (`excludedAmong`), so the session pool can't leave them out before the budget. They are still applied by the mutual check, so they are never shown. If matches or blocks grow large enough to matter, add a "list everyone hidden from this viewer" method to `PairExclusionProvider` and add its result to the pool's `$nin`.
 - **Phase 12 (safety):**
   - Add providers for blocks in either direction, permanent for the pair, and for `reportHides`.
   - Same wiring as Phase 09.
@@ -112,8 +132,11 @@ Shared files have small additive edits only: `src/index.ts` (route), `src/indexe
   - The `likes` indexes owned by that branch (unique `{fromUserId, toUserId}`) serve both discovery like queries.
 - **Phase 15 (account lifecycle):** pausing already removes people from discovery. Deletion should remove the person's `passes` and `discoverySessions`.
 - **Phase 17 (reliability and query plans):**
-  - Measure with 10k+ synthetic profiles.
-  - Consider denormalizing discovery fields (status, readiness, pause, birth date) onto profiles, and random sampling in the database for very large pools.
+  - Measure with 10k+ synthetic profiles, especially a nationwide build, which reads every matching profile and its `users` entry.
+  - If that is too slow:
+    - Replace the hash sample with a random start point on the user ID (uniform UUIDs) and an index ending in `userId`, so a build reads only about the budget.
+    - Or denormalize discovery fields (status, readiness, pause, birth date) onto profiles. Every writer of those fields would have to keep the copy in sync, so it was not done in the pool fix.
+  - Reverse-direction mismatches still use the budget: the candidate's own gender, age and scope preferences, and the viewer's age range, since birth date is on `users`. If yields drop, these could move into the pool join.
   - Keep one active session per viewer if session churn shows up.
 - **Flutter Discover screen:**
   - Card stack from `items`, with Pass (`POST /v1/passes`).
