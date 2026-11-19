@@ -5,10 +5,17 @@ import { z } from 'zod';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
 import type { UserDocument } from '../auth/account.js';
 import type { Env } from '../../config.js';
+import { sendRateLimited } from '../rate-limit/http.js';
+import { createAccountRateLimiter, HOUR_MS } from '../rate-limit/window-counter.js';
 import { resolveCursorSecret } from './cursor.js';
 import { createDiscoveryService, DiscoveryError, type DiscoveryOptions, type DiscoveryService } from './service.js';
 
-export type DiscoveryRoutesConfig = Pick<Env, 'NODE_ENV' | 'DISCOVERY_CURSOR_SECRET' | 'PASS_COOLDOWN_DAYS'>;
+/**
+ * loadConfig() always sets DISCOVERY_SESSIONS_PER_HOUR. A hand-built config
+ * without it (tests) leaves the new-session limit off.
+ */
+export type DiscoveryRoutesConfig = Pick<Env, 'NODE_ENV' | 'DISCOVERY_CURSOR_SECRET' | 'PASS_COOLDOWN_DAYS'>
+  & Partial<Pick<Env, 'DISCOVERY_SESSIONS_PER_HOUR'>>;
 
 /** Test seams (clock, seed, exclusions, catalog, sizes); production uses the defaults. */
 export type DiscoveryRouteOverrides = Omit<DiscoveryOptions, 'cursorSecret' | 'passCooldownDays'>;
@@ -30,7 +37,8 @@ export function createConfiguredDiscoveryService(
 
 /**
  * Pass `service` to share one instance with other routes (profile access
- * rechecks discoverability); `overrides` only apply when it is omitted.
+ * rechecks discoverability); `overrides` only apply when it is omitted, except
+ * `now`, which also clocks the hourly new-session limit.
  */
 export function createDiscoveryRoutes(
   db: Db,
@@ -42,6 +50,14 @@ export function createDiscoveryRoutes(
   const router = Router();
   const requireAuth = createAuthMiddleware(auth);
   const users = db.collection<UserDocument>('users');
+  // A new session scans up to poolScanLimit profiles and stores a snapshot; paging is cheap and unlimited
+  const newSessions = config.DISCOVERY_SESSIONS_PER_HOUR === undefined
+    ? null
+    : createAccountRateLimiter(
+      db,
+      { action: 'discovery_session', limit: config.DISCOVERY_SESSIONS_PER_HOUR, windowMs: HOUR_MS },
+      overrides.now,
+    );
 
   function sendError(req: Request, res: Response, err: DiscoveryError) {
     res.status(err.status).json({
@@ -69,7 +85,8 @@ export function createDiscoveryRoutes(
 
   /**
    * GET /v1/discovery[?cursor=...]
-   * Without a cursor: start a new session. With one: continue it.
+   * Without a cursor: start a new session (counted against the hourly limit,
+   * whatever the outcome). With one: continue it.
    */
   router.get('/v1/discovery', requireAuth, async (req: Request, res: Response) => {
     const user = await loadUser(req, res);
@@ -79,6 +96,14 @@ export function createDiscoveryRoutes(
     if (raw !== undefined && typeof raw !== 'string') {
       sendError(req, res, new DiscoveryError(400, 'INVALID_CURSOR', 'This page link is not valid. Refresh Discover.'));
       return;
+    }
+
+    if (raw === undefined && newSessions) {
+      const attempt = await newSessions.consume(user._id);
+      if (!attempt.ok) {
+        sendRateLimited(req, res, attempt.retryAfterSeconds, 'Discover was refreshed too many times. Please try again later.');
+        return;
+      }
     }
 
     try {

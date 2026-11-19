@@ -14,6 +14,9 @@ info:
     `{ error, requestId }`. Every response carries a request ID: the client's
     `X-Request-Id` header when it matches `^[A-Za-z0-9._:-]{1,128}$`,
     otherwise one the server generates.
+
+    Every authenticated operation can answer 429 `RATE_LIMITED` (retryable, with
+    a `Retry-After` header in seconds); see `docs/features/rate-limits.md`.
 servers:
   - url: http://localhost:3000
 security:
@@ -37,6 +40,7 @@ paths:
               schema: { $ref: '#/components/schemas/BootstrapResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me:
     get:
@@ -64,6 +68,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/onboarding:
     patch:
@@ -114,6 +119,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/catalogs:
     get:
@@ -150,6 +156,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     patch:
       summary: Edit own profile draft fields
       description: |
@@ -172,6 +179,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/profile/preview:
     get:
@@ -185,6 +193,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/prompts:
     post:
@@ -224,6 +233,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/prompts/{id}:
     parameters:
@@ -267,6 +277,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     delete:
       summary: Remove an own answer
       responses:
@@ -289,6 +300,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/preferences:
     get:
@@ -308,6 +320,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     patch:
       summary: Edit dating preferences
       requestBody:
@@ -327,6 +340,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/profiles/{id}:
     parameters:
@@ -365,6 +379,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/discovery:
     get:
@@ -392,7 +407,10 @@ paths:
         Errors: `INVALID_CURSOR` (400, malformed, tampered or another person's
         cursor), `DISCOVERY_SESSION_EXPIRED` and `DISCOVERY_SESSION_INVALIDATED`
         (409, retryable: restart without a cursor), `ACCOUNT_NOT_ELIGIBLE` and
-        `DISCOVERY_PAUSED` (403).
+        `DISCOVERY_PAUSED` (403), `RATE_LIMITED` (429, retryable after
+        `Retry-After` seconds). Requests without a cursor are limited per account
+        per hour (`DISCOVERY_SESSIONS_PER_HOUR`, default 30), whatever their
+        outcome; paging with a cursor only counts toward the generic request limit.
       parameters:
         - name: cursor
           in: query
@@ -410,6 +428,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/DiscoverySessionStale' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/passes:
     post:
@@ -439,6 +458,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   # --- Likes (Phase 08) -----------------------------------------------------
   /v1/likes:
@@ -465,7 +485,8 @@ paths:
         (caller has no account); 409 `TARGET_UNAVAILABLE`, `TARGET_STALE`,
         `ALREADY_LIKED`, `INCOMING_LIKE_PENDING`, `IDEMPOTENCY_KEY_REUSED`;
         422 `VALIDATION_ERROR`, `SELF_LIKE`; 429 `QUOTA_EXHAUSTED` with `limit`,
-        `resetAt` and a `Retry-After` header in seconds.
+        `resetAt` and a `Retry-After` header in seconds, or `RATE_LIMITED`
+        (retryable, generic request limit) with `retryAfterSeconds` and the same header.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -519,6 +540,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/LikeError' }
         '404': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/likes/incoming:
     get:
@@ -552,6 +574,7 @@ paths:
         '403': { $ref: '#/components/responses/LikeError' }
         '404': { $ref: '#/components/responses/LikeError' }
         '422': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/likes/{id}/decline:
     parameters:
@@ -589,6 +612,7 @@ paths:
         '403': { $ref: '#/components/responses/LikeError' }
         '404': { $ref: '#/components/responses/LikeError' }
         '409': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/likes/{id}/accept:
     parameters:
@@ -606,6 +630,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/LikeError' }
         '404': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '501': { $ref: '#/components/responses/LikeError' }
 
   # --- Staff API (Phase 13). Every route: verified Firebase ID token with the
@@ -626,6 +651,7 @@ paths:
               schema: { $ref: '#/components/schemas/AdminMeResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/reasons:
     get:
@@ -638,6 +664,7 @@ paths:
               schema: { $ref: '#/components/schemas/AdminReasonsResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/photos:
     get:
@@ -656,6 +683,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/photos/{id}:
     parameters:
@@ -671,6 +699,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/photos/{id}/media/{variant}:
     parameters:
@@ -691,6 +720,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503':
           description: Storage temporarily unavailable (retryable)
           content:
@@ -723,6 +753,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/prompt-answers:
     get:
@@ -741,6 +772,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/prompt-answers/{id}:
     parameters:
@@ -756,6 +788,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/prompt-answers/{id}/review:
     parameters:
@@ -784,6 +817,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/users/{id}:
     parameters:
@@ -799,6 +833,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/users/{id}/suspend:
     parameters:
@@ -831,6 +866,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/users/{id}/restore:
     parameters:
@@ -860,6 +896,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/audit-log:
     get:
@@ -877,6 +914,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
 components:
   securitySchemes:
@@ -936,6 +974,18 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RateLimited:
+      description: |
+        `RATE_LIMITED` (retryable): this account sent too many requests. Wait the
+        `Retry-After` seconds (also `error.retryAfterSeconds`), then retry with the
+        same request and Idempotency-Key, if any.
+      headers:
+        Retry-After:
+          description: Whole seconds to wait before retrying
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
 
     LikeError:
       description: Like error; each operation's description lists its codes
@@ -989,6 +1039,10 @@ components:
             currentRevision:
               type: integer
               description: Present on REVISION_CONFLICT
+            retryAfterSeconds:
+              type: integer
+              minimum: 1
+              description: Present on RATE_LIMITED and UPLOADS_BUSY; same value as the Retry-After header
         requestId: { type: string }
 
     ErrorCode:
@@ -1007,6 +1061,8 @@ components:
           400 `BAD_REQUEST` (any other malformed request, such as a path
           parameter that is not valid percent-encoding). None are retryable:
           fix the request instead. A missing body is treated as `{}`.
+        - Any authenticated route: 429 `RATE_LIMITED` (retryable after the
+          `Retry-After` header, also sent as `retryAfterSeconds`).
         - Accounts: 403 `ACCOUNT_RESTRICTED` (suspended or being deleted),
           `ACCOUNT_NOT_ELIGIBLE` (not active and profile-ready); 422
           `AGE_INELIGIBLE` (under 18; after one refused under-18 date, every
@@ -1025,7 +1081,7 @@ components:
           `PAYLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`, `INVALID_IMAGE`,
           `IMAGE_DIMENSIONS_INVALID`, `PHOTO_LIMIT_REACHED`, `PHOTO_SET_BUSY`,
           `PHOTO_NOT_FOUND`, `PHOTO_SET_MISMATCH`, `MEDIA_UNAVAILABLE`,
-          `STORAGE_UNAVAILABLE`.
+          `STORAGE_UNAVAILABLE`, `UPLOADS_BUSY` (503, retryable after `Retry-After`).
         - Likes (see `/v1/likes*` per endpoint): `ACCOUNT_PAUSED`, `SELF_LIKE`,
           `TARGET_UNAVAILABLE`, `TARGET_STALE`, `ALREADY_LIKED`,
           `INCOMING_LIKE_PENDING`, `QUOTA_EXHAUSTED`, `LIKE_NOT_FOUND`,
@@ -1040,6 +1096,7 @@ components:
         - INVALID_JSON
         - BAD_REQUEST
         - NOT_FOUND
+        - RATE_LIMITED
         - ACCOUNT_RESTRICTED
         - ACCOUNT_NOT_ELIGIBLE
         - AGE_INELIGIBLE
@@ -1070,6 +1127,7 @@ components:
         - PHOTO_SET_MISMATCH
         - MEDIA_UNAVAILABLE
         - STORAGE_UNAVAILABLE
+        - UPLOADS_BUSY
         - ACCOUNT_PAUSED
         - SELF_LIKE
         - TARGET_UNAVAILABLE
@@ -1555,6 +1613,10 @@ components:
               type: string
               format: date-time
               description: Present on QUOTA_EXHAUSTED; the next UTC midnight
+            retryAfterSeconds:
+              type: integer
+              minimum: 1
+              description: Present on RATE_LIMITED; same value as the Retry-After header
         requestId: { type: string }
 
     LikeTarget:
