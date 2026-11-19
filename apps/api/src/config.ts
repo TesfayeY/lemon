@@ -27,6 +27,11 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+/** Invalid environment. Its message names the variables and rules, never their values, so it is safe to log. */
+export class ConfigError extends Error {
+  override name = 'ConfigError';
+}
+
 export function loadConfig(): Env {
   const result = envSchema.safeParse(process.env);
 
@@ -34,7 +39,7 @@ export function loadConfig(): Env {
     const formatted = result.error.issues
       .map((i) => `  ${i.path.join('.')}: ${i.message}`)
       .join('\n');
-    throw new Error(`Invalid environment configuration:\n${formatted}`);
+    throw new ConfigError(`Invalid environment configuration:\n${formatted}`);
   }
 
   const config = result.data;

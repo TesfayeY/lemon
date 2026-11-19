@@ -5,13 +5,14 @@ import path from 'node:path';
 import request from 'supertest';
 import { parse } from 'yaml';
 import { Ajv2020 } from 'ajv/dist/2020.js';
-import { MongoClient, type Db } from 'mongodb';
+import { MongoClient, type Db, type Document } from 'mongodb';
 import { createApp } from '../src/app.js';
 import { ensureIndexes } from '../src/indexes.js';
 import { createDiscoveryRoutes, type DiscoveryRouteOverrides } from '../src/modules/discovery/routes.js';
-import { createDiscoveryService } from '../src/modules/discovery/service.js';
+import { candidatePoolPipeline, createDiscoveryService } from '../src/modules/discovery/service.js';
 import { combineExclusions, type PairExclusionProvider } from '../src/modules/discovery/exclusions.js';
 import { decodeCursor, encodeCursor } from '../src/modules/discovery/cursor.js';
+import { stableShuffle } from '../src/modules/discovery/shuffle.js';
 import type { DiscoveryCity, LocationCatalog } from '../src/modules/discovery/location.js';
 import type { DiscoverySessionDocument, PassDocument } from '../src/modules/discovery/schema.js';
 import { createEmptyProfile } from '../src/modules/profiles/schema.js';
@@ -178,6 +179,13 @@ const pass = (app: ReturnType<typeof makeApp>, name: string, candidateId: unknow
 
 const ids = (res: request.Response): string[] =>
   (res.body.data.items as { profile: { userId: string } }[]).map((c) => c.profile.userId);
+
+const like = (fromUserId: string, toUserId: string, state: 'pending' | 'declined' | 'accepted') => ({
+  _id: `${fromUserId}->${toUserId}`, fromUserId, toUserId, state,
+  target: { kind: 'photo', id: `${toUserId}-photo-0`, contentVersion: 1 },
+  contextSnapshot: {}, idempotencyKey: `key-${fromUserId}-${toUserId}`,
+  createdAt: new Date(), updatedAt: new Date(),
+});
 
 /** Follow cursors to the end of a session, collecting every returned candidate. */
 async function drain(app: ReturnType<typeof makeApp>, name: string): Promise<{ seen: string[]; pages: number }> {
@@ -378,12 +386,6 @@ describe('GET /v1/discovery: pair exclusions', () => {
   it('hides any outgoing like, pending incoming likes (shown in Likes) and incoming likes the viewer declined', async () => {
     await woman('viewer');
     for (const n of ['liked-pending', 'liked-declined', 'liked-accepted', 'likes-me', 'declined-by-me', 'untouched']) await man(n);
-    const like = (fromUserId: string, toUserId: string, state: string) => ({
-      _id: `${fromUserId}->${toUserId}`, fromUserId, toUserId, state,
-      target: { kind: 'photo', id: `${toUserId}-photo-0`, contentVersion: 1 },
-      contextSnapshot: {}, idempotencyKey: `key-${fromUserId}-${toUserId}`,
-      createdAt: new Date(), updatedAt: new Date(),
-    });
     await db.collection('likes').insertMany([
       like('viewer', 'liked-pending', 'pending'),
       like('viewer', 'liked-declined', 'declined'),
@@ -763,6 +765,107 @@ describe('Discovery sessions and cursors', () => {
   });
 });
 
+describe('Session pool: scan budget and fairness', () => {
+  // Hidden people are seeded first and sort first by ID, so a budget filled in
+  // index order (either profile index, or the userId index) would hold only them.
+
+  it("doesn't spend the scan budget on liked, passed, declined or unshowable profiles", async () => {
+    await woman('viewer');
+    for (const n of ['a-liked-pending', 'a-liked-declined', 'a-liked-accepted', 'a-likes-me', 'a-declined-by-me',
+      'a-passed-1', 'a-passed-2']) await man(n);
+    await man('a-onboarding', { status: 'onboarding', ready: false });
+    await man('a-suspended', { status: 'suspended' });
+    await man('a-deleting', { status: 'deletion_pending' });
+    await man('a-not-ready', { ready: false });
+    await man('a-paused', { paused: true });
+    await man('b-expired-pass');
+    await man('z-eligible-1');
+    await man('z-eligible-2');
+    await db.collection('likes').insertMany([
+      like('viewer', 'a-liked-pending', 'pending'),
+      like('viewer', 'a-liked-declined', 'declined'),
+      like('viewer', 'a-liked-accepted', 'accepted'),
+      like('a-likes-me', 'viewer', 'pending'),
+      like('a-declined-by-me', 'viewer', 'declined'),
+    ]);
+    await db.collection<PassDocument>('passes').insertMany([
+      { _id: 'p1', viewerId: 'viewer', candidateId: 'a-passed-1', passedAt: START, expiresAt: new Date(START.getTime() + DAY_MS) },
+      { _id: 'p2', viewerId: 'viewer', candidateId: 'a-passed-2', passedAt: START, expiresAt: new Date(START.getTime() + DAY_MS) },
+      // Expired but not yet removed by TTL: hides nobody, so this person is eligible
+      { _id: 'p3', viewerId: 'viewer', candidateId: 'b-expired-pass', passedAt: START, expiresAt: new Date(START.getTime() - 1) },
+    ]);
+
+    const { seen } = await drain(makeApp({ poolScanLimit: 3 }), 'viewer');
+    expect(seen.sort()).toEqual(['b-expired-pass', 'z-eligible-1', 'z-eligible-2']);
+  });
+
+  it('still finds the remaining eligible people after the viewer passed many, instead of reporting empty', async () => {
+    await woman('viewer');
+    const app = makeApp({ poolScanLimit: 4, maxSessionSize: 4 });
+    for (let i = 0; i < 12; i++) {
+      const name = await man(`a-passed-${String(i).padStart(2, '0')}`);
+      expect((await pass(app, 'viewer', name)).status).toBe(200);
+    }
+    await man('z-remaining-1');
+    await man('z-remaining-2');
+
+    const res = await discover(app, 'viewer');
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('end');
+    expect(ids(res).sort()).toEqual(['z-remaining-1', 'z-remaining-2']);
+  });
+
+  it('reads a different seeded subset per session when more people match than the budget', async () => {
+    await woman('viewer');
+    const everyone: string[] = [];
+    for (let i = 0; i < 12; i++) everyone.push(await man(`m${String(i).padStart(2, '0')}`));
+    let nextSeed = 0;
+    const app = makeApp({ poolScanLimit: 4, maxSessionSize: 4, newSeed: () => ++nextSeed });
+
+    const subsets: string[][] = [];
+    for (let i = 0; i < 30; i++) {
+      const res = await discover(app, 'viewer');
+      expect(res.body.data.status).toBe('end');
+      expect(ids(res)).toHaveLength(4);
+      subsets.push(ids(res).sort());
+    }
+    // Not one fixed cutoff: sessions read different people...
+    expect(new Set(subsets.map((s) => s.join())).size).toBeGreaterThan(1);
+    // ...so everyone, including people past any fixed cutoff, reaches Discover
+    expect([...new Set(subsets.flat())].sort()).toEqual(everyone);
+
+    // The subset and order are reproducible from the stored seed
+    const sameSeed = makeApp({ poolScanLimit: 4, maxSessionSize: 4, newSeed: () => 5 });
+    const a = await discover(sameSeed, 'viewer');
+    const b = await discover(sameSeed, 'viewer');
+    expect(ids(a)).toEqual(ids(b));
+  });
+
+  it('keeps the seeded shuffle of the whole pool when everyone fits in the budget', async () => {
+    await woman('viewer');
+    const eligible: string[] = [];
+    for (let i = 0; i < 6; i++) eligible.push(await man(`m${i}`));
+    // Hidden people never count against the budget, so the six eligible ones still fit
+    for (let i = 0; i < 4; i++) {
+      await man(`passed-${i}`);
+      await db.collection<PassDocument>('passes').insertOne({
+        _id: `p${i}`, viewerId: 'viewer', candidateId: `passed-${i}`, passedAt: START, expiresAt: new Date(START.getTime() + DAY_MS),
+      });
+    }
+    for (let i = 0; i < 3; i++) await man(`suspended-${i}`, { status: 'suspended' });
+
+    await discover(makeApp({ poolScanLimit: 6 }), 'viewer');
+    expect((await onlySession()).candidateIds).toEqual(stableShuffle([...eligible].sort(), 42));
+
+    // Any seed reads the same whole pool; only the order changes
+    for (const s of [1, 2, 3]) {
+      await db.collection('discoverySessions').deleteMany({});
+      await discover(makeApp({ poolScanLimit: 6, newSeed: () => s }), 'viewer');
+      expect((await onlySession()).candidateIds).toEqual(stableShuffle([...eligible].sort(), s));
+    }
+  });
+});
+
 describe('isDiscoverable', () => {
   it('applies the same rules as the feed', async () => {
     await woman('viewer');
@@ -796,24 +899,41 @@ describe('Discovery indexes and query plans', () => {
     })));
   });
 
+  /** Winning plan only (rejected plans name other indexes), whether or not the whole pipeline was pushed down. */
+  const winningPlanOf = (explain: Document) =>
+    JSON.stringify(explain['stages']?.[0]?.['$cursor']?.queryPlanner?.winningPlan ?? explain['queryPlanner']?.winningPlan);
+
   it.each([
-    ['state', { stateCode: 'XA' }, 'genderIdentity_1_stateCode_1'],
-    ['city', { cityId: 'riverton-xa' }, 'genderIdentity_1_cityId_1'],
-    ['metro', { cityId: { $in: ['springfield-xa', 'lakeview-xa', 'harbor-xb'] } }, 'genderIdentity_1_cityId_1'],
-  ])('uses an index for the %s candidate pre-filter', async (_label, scope, indexName) => {
+    ['state', { genderIdentity: { $in: ['man'] }, stateCode: 'XA' }, 'genderIdentity_1_stateCode_1'],
+    ['city', { genderIdentity: { $in: ['man'] }, cityId: 'riverton-xa' }, 'genderIdentity_1_cityId_1'],
+    ['metro', { genderIdentity: { $in: ['man'] }, cityId: { $in: ['springfield-xa', 'lakeview-xa', 'harbor-xb'] } }, 'genderIdentity_1_cityId_1'],
+    ['nationwide', { genderIdentity: { $in: ['man', 'woman'] } }, 'genderIdentity_1_'],
+  ])('builds the %s session pool from a profile index and joins users by _id', async (_label, filter, indexName) => {
+    await db.collection('users').insertMany(Array.from({ length: 400 }, (_, i) => ({
+      _id: `load-${i}` as never, firebaseUid: `uid-load-${i}`, accountStatus: 'active', profileReady: true, discoverPaused: false,
+    })));
+    const hidden = ['viewer', ...Array.from({ length: 50 }, (_, i) => `load-${i * 3}`)];
     const explain = await db.collection('profiles')
-      .find({ genderIdentity: { $in: ['man'] }, ...scope, countryCode: 'US', userId: { $ne: 'viewer' } }, { projection: { _id: 0, userId: 1 } })
+      .aggregate(candidatePoolPipeline({ ...filter, countryCode: 'US' }, hidden, 42, 100))
       .explain('queryPlanner');
-    const plan = planOf(explain);
+    const plan = winningPlanOf(explain);
     expect(plan).not.toContain('COLLSCAN');
-    expect(plan).toContain(indexName);
+    expect(plan).toContain(`"indexName":"${indexName}`);
+    // Account status comes from an indexed join on users._id, not a scan of users
+    expect(plan).toContain('"foreignField":"_id"');
+    expect(plan).toContain('"indexName":"_id_"');
   });
 
-  it('uses an index for the nationwide pre-filter', async () => {
-    const explain = await db.collection('profiles')
-      .find({ genderIdentity: { $in: ['man', 'woman'] }, countryCode: 'US', userId: { $ne: 'viewer' } })
-      .explain('queryPlanner');
-    expect(planOf(explain)).not.toContain('COLLSCAN');
+  it.each([
+    ['sent likes', 'likes', { fromUserId: 'viewer' }, 'toUserId', 'fromUserId_1_'],
+    ['received pending and declined likes', 'likes', { toUserId: 'viewer', state: { $in: ['pending', 'declined'] } }, 'fromUserId',
+      'toUserId_1_state_1_createdAt_-1'],
+    ['active passes', 'passes', { viewerId: 'viewer', expiresAt: { $gt: START } }, 'candidateId', 'viewerId_1_candidateId_1'],
+  ])("lists the viewer's %s for the pool exclusion from an index", async (_label, collection, filter, field, indexName) => {
+    const explain = await db.collection(collection).find(filter, { projection: { _id: 0, [field]: 1 } }).explain('queryPlanner');
+    const plan = winningPlanOf(explain);
+    expect(plan).not.toContain('COLLSCAN');
+    expect(plan).toContain(`"indexName":"${indexName}`);
   });
 
   it('uses the unique pass index for per-page pass checks', async () => {

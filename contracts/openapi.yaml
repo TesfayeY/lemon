@@ -11,7 +11,9 @@ info:
     fails the contract test in `apps/api/test/contract.test.ts`.
 
     Successful responses are wrapped as `{ data, meta }`; failures as
-    `{ error, requestId }`.
+    `{ error, requestId }`. Every response carries a request ID: the client's
+    `X-Request-Id` header when it matches `^[A-Za-z0-9._:-]{1,128}$`,
+    otherwise one the server generates.
 servers:
   - url: http://localhost:3000
 security:
@@ -445,7 +447,12 @@ paths:
       summary: Like one photo or prompt answer at a specific content version
       description: |
         The sender is the verified token's account; any sender field in the body
-        is ignored. Validation (recipient available, target owned by the
+        is ignored. The sender must be able to view the recipient's profile right
+        now, by the same rule as `GET /v1/profiles/{id}` (someone they could see
+        in Discover, or someone with a pending like to them); everyone else is
+        404 `PROFILE_UNAVAILABLE`. Liking someone ends that access until the pair
+        matches, so only a retry with the original Idempotency-Key still returns
+        the like. Validation (recipient available, target owned by the
         recipient, published, version current) happens before the daily charge,
         all inside one transaction: a rejected or rolled-back like charges nothing.
         One like per direction ever in v1. The sender never learns whether a like
@@ -453,7 +460,8 @@ paths:
 
         Error codes: 400 `IDEMPOTENCY_KEY_REQUIRED`; 403 `ACCOUNT_NOT_ELIGIBLE`,
         `ACCOUNT_PAUSED`, `ACCOUNT_RESTRICTED`; 404 `PROFILE_UNAVAILABLE`
-        (recipient missing, inactive, unready, paused or blocked), `NOT_FOUND`
+        (recipient missing, inactive, unready, paused, blocked or not viewable by
+        the sender; indistinguishable), `NOT_FOUND`
         (caller has no account); 409 `TARGET_UNAVAILABLE`, `TARGET_STALE`,
         `ALREADY_LIKED`, `INCOMING_LIKE_PENDING`, `IDEMPOTENCY_KEY_REUSED`;
         422 `VALIDATION_ERROR`, `SELF_LIKE`; 429 `QUOTA_EXHAUSTED` with `limit`,
@@ -993,6 +1001,12 @@ components:
         - Any route: 401 `UNAUTHENTICATED`, `TOKEN_REVOKED`; 500 `INTERNAL_ERROR`;
           404 `NOT_FOUND` (no app account yet: call `POST /v1/me/bootstrap`; also
           a missing own resource or unknown route).
+        - Any request body: 400 `INVALID_JSON` (the body is not valid JSON);
+          413 `PAYLOAD_TOO_LARGE` (a JSON body over 1 MB); 415
+          `UNSUPPORTED_MEDIA_TYPE` (an unsupported body charset or encoding);
+          400 `BAD_REQUEST` (any other malformed request, such as a path
+          parameter that is not valid percent-encoding). None are retryable:
+          fix the request instead. A missing body is treated as `{}`.
         - Accounts: 403 `ACCOUNT_RESTRICTED` (suspended or being deleted),
           `ACCOUNT_NOT_ELIGIBLE` (not active and profile-ready); 422
           `AGE_INELIGIBLE` (under 18; after one refused under-18 date, every
@@ -1023,6 +1037,8 @@ components:
         - UNAUTHENTICATED
         - TOKEN_REVOKED
         - INTERNAL_ERROR
+        - INVALID_JSON
+        - BAD_REQUEST
         - NOT_FOUND
         - ACCOUNT_RESTRICTED
         - ACCOUNT_NOT_ELIGIBLE
