@@ -14,11 +14,12 @@ import {
 } from '../src/modules/likes/index.js';
 import { QUOTAS_COLLECTION, type QuotaDocument } from '../src/modules/likes/quota.js';
 import { createEmptyProfile, type ProfileDocument, type PromptAnswerDocument } from '../src/modules/profiles/schema.js';
-import { createProfileRoutes } from '../src/modules/profiles/routes.js';
-import { createDefaultPreferences } from '../src/modules/preferences/schema.js';
+import { createProfileRoutes, type ProfileAccess } from '../src/modules/profiles/routes.js';
+import { createDefaultPreferences, type PreferencesDocument } from '../src/modules/preferences/schema.js';
+import { createConfiguredDiscoveryService } from '../src/modules/discovery/routes.js';
 import { photoObjectKeys, type PhotoDocument } from '../src/modules/media/schema.js';
 import type { UserDocument } from '../src/modules/auth/account.js';
-import { createMultiUserAuth } from './support.js';
+import { allowAllProfileAccess, createMultiUserAuth } from './support.js';
 
 /**
  * Likes run against the real local MongoDB replica set: the unique indexes,
@@ -37,9 +38,11 @@ let likes: Collection<LikeDocument>;
 let quotas: Collection<QuotaDocument>;
 let app: ReturnType<typeof createApp>;
 
-// Mutable per-test collaborators the app reads through
+// Mutable per-test collaborators the app reads through. Seeded users have no
+// preferences, so profile access allows everyone unless a test swaps it.
 let clock = NOW;
 let guard: PairGuard = noopPairGuard;
+let access: ProfileAccess = allowAllProfileAccess;
 
 beforeAll(async () => {
   client = new MongoClient(uri, { serverSelectionTimeoutMS: 3000 });
@@ -63,8 +66,9 @@ afterAll(async () => {
 beforeEach(async () => {
   clock = NOW;
   guard = noopPairGuard;
+  access = allowAllProfileAccess;
   await Promise.all(
-    ['users', 'profiles', 'preferences', 'photos', 'promptAnswers', LIKES_COLLECTION, QUOTAS_COLLECTION]
+    ['users', 'profiles', 'preferences', 'photos', 'promptAnswers', 'passes', LIKES_COLLECTION, QUOTAS_COLLECTION]
       .map(name => db.collection(name).deleteMany({})),
   );
 });
@@ -80,6 +84,7 @@ function buildLikesApp(dailyLikes: number) {
           check: ctx => guard.check(ctx),
           touch: ctx => guard.touch(ctx),
         },
+        profileAccess: { canViewProfile: (viewer, targetUserId) => access.canViewProfile(viewer, targetUserId) },
       }),
     ],
   });
@@ -94,7 +99,11 @@ interface Seeded {
   answerIds: string[];
 }
 
-async function seedUser(name: string, overrides: Partial<UserDocument> = {}): Promise<Seeded> {
+async function seedUser(
+  name: string,
+  overrides: Partial<UserDocument> = {},
+  profile: Partial<ProfileDocument> = {},
+): Promise<Seeded> {
   const userId = `user-${name}`;
   const user: UserDocument = {
     _id: userId,
@@ -119,6 +128,7 @@ async function seedUser(name: string, overrides: Partial<UserDocument> = {}): Pr
     cityId: 'city-dallas-tx',
     stateCode: 'TX',
     intention: 'serious',
+    ...profile,
   });
 
   const photoIds = [0, 1, 2].map(i => `${name}-photo-${i}`);
@@ -537,6 +547,160 @@ describe('POST /v1/likes', () => {
       expect(res.body.error.code).toBe('INCOMING_LIKE_PENDING');
       expectContract(res, '/v1/likes', 'post');
       expect(await usedLikes(alice.userId)).toBe(0);
+    });
+  });
+
+  describe('contextual access: the sender must be able to view the recipient', () => {
+    it('refuses a recipient the sender may not view with the same 404, charging nothing', async () => {
+      const alice = await seedUser('alice');
+      const bob = await seedUser('bob');
+      const carol = await seedUser('carol');
+      const paused = await seedUser('paused', { discoverPaused: true });
+      const asked: [string, string][] = [];
+      access = {
+        canViewProfile: async (viewer, targetUserId) => {
+          asked.push([viewer._id, targetUserId]);
+          return targetUserId !== bob.userId;
+        },
+      };
+      expect((await send('alice', photoTarget(carol))).status).toBe(201);
+
+      const refused = [];
+      for (const body of [photoTarget(bob), { ...promptTarget(bob, 1), comment: 'Selam!' }]) {
+        const res = await send('alice', body);
+        expect(res.status, `${JSON.stringify(body)}`).toBe(404);
+        expectContract(res, '/v1/likes', 'post');
+        refused.push(res.body.error);
+      }
+      // Indistinguishable from any other unavailable profile
+      const unavailable = await send('alice', photoTarget(paused));
+      expect(unavailable.status).toBe(404);
+      for (const error of refused) expect(error).toEqual(unavailable.body.error);
+      expect(unavailable.body.error).toMatchObject({ code: 'PROFILE_UNAVAILABLE', retryable: false });
+
+      // Asked about the token's account, never a body field
+      expect(asked).toContainEqual([alice.userId, bob.userId]);
+      expect(await likes.countDocuments({ toUserId: bob.userId })).toBe(0);
+      expect(await usedLikes(alice.userId)).toBe(1);
+      const quota = await request(app).get('/v1/likes/quota').set('Authorization', as('alice'));
+      expect(quota.body.data).toMatchObject({ used: 1, remaining: 7 });
+      expect((await incoming('bob')).body.data.likes).toEqual([]);
+    });
+
+    it('still replays a like after the sender lost access to the recipient (D-11)', async () => {
+      await seedUser('alice');
+      const bob = await seedUser('bob');
+      const key = newKey();
+      const body = { ...photoTarget(bob), comment: 'Selam!' };
+      const first = await send('alice', body, key);
+      expect(first.status).toBe(201);
+
+      access = { canViewProfile: async () => false };
+      const retry = await send('alice', body, key);
+      expect(retry.status).toBe(200);
+      expect(retry.body.data.like).toEqual(first.body.data.like);
+      expect((await send('alice', { ...body, comment: 'other' }, key)).body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+      expect(await usedLikes('user-alice')).toBe(1);
+    });
+
+    describe('with the real discovery service', () => {
+      const discovery = () => createConfiguredDiscoveryService(
+        db,
+        { NODE_ENV: 'test', DISCOVERY_CURSOR_SECRET: 'likes-test-cursor-secret-'.padEnd(48, 'z'), PASS_COOLDOWN_DAYS: 30 },
+        { now: () => clock },
+      );
+
+      async function seedPreferences(userId: string, prefs: Partial<PreferencesDocument>) {
+        await db.collection<PreferencesDocument>('preferences').insertOne({ ...createDefaultPreferences(userId), ...prefs });
+      }
+
+      /** A 26-year-old woman in Dallas and a 30-year-old man in Houston, each looking for the other */
+      async function seedEligiblePair() {
+        const carol = await seedUser('carol', { birthDate: '2000-04-02' });
+        await seedPreferences(carol.userId, { acceptedGenderCategories: ['man'], minAge: 25, maxAge: 40, locationScope: 'state' });
+        const dan = await seedUser('dan', { birthDate: '1996-08-20' },
+          { genderIdentity: 'man', cityId: 'city-houston-tx', stateCode: 'TX' });
+        await seedPreferences(dan.userId, { acceptedGenderCategories: ['woman'], minAge: 25, maxAge: 35, locationScope: 'state' });
+        return { carol, dan };
+      }
+
+      beforeEach(() => {
+        access = discovery();
+      });
+
+      it('refuses a like to someone whose preferences exclude the sender, and allows a mutually eligible pair', async () => {
+        // A 60-year-old man in New York, looking for women anywhere
+        const bob = await seedUser('bob', { birthDate: '1966-05-01' },
+          { genderIdentity: 'man', cityId: 'city-new-york-ny', stateCode: 'NY' });
+        await seedPreferences(bob.userId, { acceptedGenderCategories: ['woman'], minAge: 18, maxAge: 99, locationScope: 'nationwide' });
+        // A 20-year-old woman in Dallas, looking for women aged 18-25 in her city
+        const alice = await seedUser('alice', { birthDate: '2006-01-15' });
+        await seedPreferences(alice.userId, { acceptedGenderCategories: ['woman'], minAge: 18, maxAge: 25, locationScope: 'city' });
+        const { carol, dan } = await seedEligiblePair();
+
+        for (const body of [photoTarget(alice), { ...promptTarget(alice), comment: 'Hey there' }]) {
+          const res = await send('bob', body);
+          expect(res.status).toBe(404);
+          expect(res.body.error.code).toBe('PROFILE_UNAVAILABLE');
+          expectContract(res, '/v1/likes', 'post');
+        }
+        expect(await likes.countDocuments({ toUserId: alice.userId })).toBe(0);
+        expect(await usedLikes(bob.userId)).toBe(0);
+        expect((await incoming('alice')).body.data.likes).toEqual([]);
+
+        const liked = await send('dan', { ...photoTarget(carol), comment: 'Selam!' });
+        expect(liked.status).toBe(201);
+        expect(await usedLikes(dan.userId)).toBe(1);
+        const inbox = await incoming('carol');
+        expect(inbox.body.data.likes.map((l: { comment: string }) => l.comment)).toEqual(['Selam!']);
+
+        // Liking ends access (D-11), so a second like answers like any unavailable
+        // profile, before and after the recipient declines: nothing reveals the decline
+        const again = await send('dan', promptTarget(carol));
+        expect(again.status).toBe(404);
+        expect((await decline('carol', liked.body.data.like.id)).status).toBe(200);
+        const afterDecline = await send('dan', promptTarget(carol, 1));
+        expect(afterDecline.body.error).toEqual(again.body.error);
+        expect(await usedLikes(dan.userId)).toBe(1);
+      });
+
+      it('replays a concurrent retry whose access check ran after the first like committed', async () => {
+        const { carol, dan } = await seedEligiblePair();
+
+        // Both requests miss the replay lookup; the first then likes, and only
+        // after it responds does the second check access (now lost, D-11)
+        const real = discovery();
+        let secondArrived!: () => void;
+        const second = new Promise<void>(resolve => { secondArrived = resolve; });
+        let firstResponded!: () => void;
+        const firstResponse = new Promise<void>(resolve => { firstResponded = resolve; });
+        let calls = 0;
+        access = {
+          canViewProfile: async (viewer, targetUserId) => {
+            if (++calls === 1) {
+              await second;
+            } else {
+              secondArrived();
+              await firstResponse;
+            }
+            return real.canViewProfile(viewer, targetUserId);
+          },
+        };
+
+        const key = newKey();
+        const settle = (res: request.Response) => {
+          firstResponded();
+          return res;
+        };
+        const results = await Promise.all([
+          send('dan', photoTarget(carol), key).then(settle),
+          send('dan', photoTarget(carol), key).then(settle),
+        ]);
+        expect(results.map(r => r.status).sort()).toEqual([200, 201]);
+        expect(new Set(results.map(r => r.body.data.like.id)).size).toBe(1);
+        expect(calls).toBe(2);
+        expect(await usedLikes(dan.userId)).toBe(1);
+      });
     });
   });
 

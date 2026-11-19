@@ -28,6 +28,7 @@ export interface DiscoverySessionDocument {
   preferencesRevision: number;
   /** Viewer's residence city at creation; moving invalidates the session. */
   viewerCityId: string;
+  /** Chooses which candidates are read when the pool exceeds the scan budget, and their order. */
   seed: number;
   candidateIds: string[];
   createdAt: Date;
@@ -47,7 +48,9 @@ export async function ensureDiscoveryIndexes(db: Db): Promise<void> {
     db.collection(PASSES_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection(DISCOVERY_SESSIONS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     // Candidate pre-filters: gender plus the viewer's city, metro cities or state.
-    // Nationwide uses the genderIdentity prefix of either.
+    // Nationwide uses the genderIdentity prefix of either. The session pool
+    // joins users on _id and lists the viewer's likes and passes through the
+    // likes indexes and the passes index above, so it needs no index of its own.
     db.collection('profiles').createIndex({ genderIdentity: 1, cityId: 1 }),
     db.collection('profiles').createIndex({ genderIdentity: 1, stateCode: 1 }),
   ]);

@@ -1,6 +1,7 @@
 import type { Db } from 'mongodb';
 import type { MediaStorage } from '../../adapters/media/storage.js';
 import { isDuplicateKeyError } from '../../indexes.js';
+import { describeError } from '../../logging.js';
 import { allObjectKeys, PhotoState, type PhotoDocument, type PhotoSetDocument } from './schema.js';
 
 /** Fetch the owner's photo set, creating it at revision 1 on first access. */
@@ -39,7 +40,7 @@ export async function purgePhotoObjects(db: Db, storage: MediaStorage, photo: Ph
       await storage.deleteObject(key);
     }
   } catch (err) {
-    console.error(`Media cleanup failed for photo ${photo._id}: ${(err as Error).message}`);
+    console.error(`Media cleanup failed for photo ${photo._id}: ${describeError(err)}`);
     return false;
   }
 

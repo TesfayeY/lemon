@@ -23,6 +23,9 @@ export async function evaluateReadiness(db: Db, user: UserDocument): Promise<Rea
   });
 }
 
+/** Lost compare-and-set rounds before giving up; each loss means another guarded write landed */
+export const MAX_READINESS_ATTEMPTS = 5;
+
 /**
  * Recompute and persist profile readiness for a user.
  *
@@ -30,6 +33,12 @@ export async function evaluateReadiness(db: Db, user: UserDocument): Promise<Rea
  *   field changed, so stale discovery/like decisions can be detected later.
  * - The first time a profile becomes ready, an onboarding account becomes
  *   active. Activation is one-way; later readiness loss only clears profileReady.
+ * - The write is a compare-and-set on the accountStatus and guardVersion it
+ *   read. Evaluation takes several reads, and a staff suspension (or another
+ *   recompute) can commit in between; a plain write would then put a suspended
+ *   account back to active. On a lost race the user is re-read and
+ *   re-evaluated, so only an account still in onboarding is ever activated and
+ *   suspended, deleting or deleted accounts never are.
  */
 export async function recomputeReadiness(
   db: Db,
@@ -37,21 +46,27 @@ export async function recomputeReadiness(
   options: { eligibilityChanged?: boolean } = {},
 ): Promise<boolean> {
   const users = db.collection<UserDocument>('users');
-  const user = await users.findOne({ _id: userId });
-  if (!user) return false;
 
-  const { ready } = await evaluateReadiness(db, user);
+  for (let attempt = 0; attempt < MAX_READINESS_ATTEMPTS; attempt++) {
+    const user = await users.findOne({ _id: userId });
+    if (!user) return false;
 
-  const set: Partial<UserDocument> = {};
-  if (user.profileReady !== ready) set.profileReady = ready;
-  if (ready && user.accountStatus === AccountStatus.ONBOARDING) set.accountStatus = AccountStatus.ACTIVE;
+    const { ready } = await evaluateReadiness(db, user);
 
-  const bumpGuard = options.eligibilityChanged || Object.keys(set).length > 0;
-  if (bumpGuard) {
-    await users.updateOne(
-      { _id: userId },
+    const set: Partial<UserDocument> = {};
+    if (user.profileReady !== ready) set.profileReady = ready;
+    if (ready && user.accountStatus === AccountStatus.ONBOARDING) set.accountStatus = AccountStatus.ACTIVE;
+
+    const bumpGuard = options.eligibilityChanged || Object.keys(set).length > 0;
+    if (!bumpGuard) return ready;
+
+    const result = await users.updateOne(
+      { _id: userId, accountStatus: user.accountStatus, guardVersion: user.guardVersion },
       { $set: { ...set, updatedAt: new Date() }, $inc: { guardVersion: 1 } },
     );
+    if (result.matchedCount > 0) return ready;
+    // The account changed after it was read: evaluate again from fresh state
   }
-  return ready;
+
+  throw new Error(`Readiness recompute lost ${MAX_READINESS_ATTEMPTS} compare-and-set rounds in a row`);
 }

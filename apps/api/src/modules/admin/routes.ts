@@ -13,6 +13,7 @@ import type { Auth } from 'firebase-admin/auth';
 import type { Db, MongoClient } from 'mongodb';
 import { z } from 'zod';
 import type { Env } from '../../config.js';
+import { describeError } from '../../logging.js';
 import { LocalMediaStorage } from '../../adapters/media/local.js';
 import type { MediaStorage } from '../../adapters/media/storage.js';
 import { createAuthMiddleware } from '../auth/middleware.js';
@@ -85,7 +86,7 @@ export function createAdminRoutes(
 ) {
   const router = Router();
   const storage = deps.storage ?? new LocalMediaStorage(config.MEDIA_LOCAL_DIR);
-  const service = createAdminService(db, client, { now: deps.now, afterAuditWrite: deps.afterAuditWrite });
+  const service = createAdminService(db, client, auth, { now: deps.now, afterAuditWrite: deps.afterAuditWrite });
 
   const requireAuth = createAuthMiddleware(auth);
   const guard = (permission: Parameters<typeof requireStaff>[0], recentAuth = false) => [
@@ -184,7 +185,7 @@ export function createAdminRoutes(
     try {
       stream = await storage.getObjectStream(photo.variantKeys[variant]);
     } catch (err) {
-      console.error(`[${req.requestId}] Admin media read failed: ${(err as Error).message}`);
+      console.error(`[${req.requestId}] Admin media read failed: ${describeError(err)}`);
       sendError(req, res, 503, 'STORAGE_UNAVAILABLE', 'This photo could not be loaded. Try again.', {}, true);
       return;
     }
@@ -199,7 +200,7 @@ export function createAdminRoutes(
     try {
       await pipeline(stream, res);
     } catch (err) {
-      console.error(`[${req.requestId}] Admin media stream interrupted: ${(err as Error).message}`);
+      console.error(`[${req.requestId}] Admin media stream interrupted: ${describeError(err)}`);
     }
   }));
 

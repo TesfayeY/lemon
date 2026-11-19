@@ -11,7 +11,12 @@ info:
     fails the contract test in `apps/api/test/contract.test.ts`.
 
     Successful responses are wrapped as `{ data, meta }`; failures as
-    `{ error, requestId }`.
+    `{ error, requestId }`. Every response carries a request ID: the client's
+    `X-Request-Id` header when it matches `^[A-Za-z0-9._:-]{1,128}$`,
+    otherwise one the server generates.
+
+    Every authenticated operation can answer 429 `RATE_LIMITED` (retryable, with
+    a `Retry-After` header in seconds); see `docs/features/rate-limits.md`.
 servers:
   - url: http://localhost:3000
 security:
@@ -35,6 +40,7 @@ paths:
               schema: { $ref: '#/components/schemas/BootstrapResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me:
     get:
@@ -62,10 +68,22 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/onboarding:
     patch:
       summary: Save birth date and/or terms acceptance
+      description: |
+        Only while `accountStatus` is `onboarding`. A refused field saves
+        nothing from the request (a refused birth date also discards
+        `termsAccepted`).
+
+        An under-18 birth date locks the age gate: the server records that a
+        date was refused (never the date itself), clears any birth date saved
+        earlier, and answers that and every later `birthDate` submission,
+        valid or not, with 422 `AGE_INELIGIBLE`. There is no self-service
+        unlock; date changes go through support (specification §4.1).
+        `termsAccepted` on its own is still accepted.
       requestBody:
         required: true
         content:
@@ -87,8 +105,21 @@ paths:
               schema: { $ref: '#/components/schemas/UpdatedResponse' }
         '400': { $ref: '#/components/responses/NoUpdates' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
+        '409':
+          description: '`INVALID_STATE`: the account is no longer onboarding'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: |
+            `VALIDATION_ERROR` (malformed or future date, `termsAccepted` not
+            `true`) or `AGE_INELIGIBLE` (under 18, or any birth date once the
+            age gate is locked). Nothing from the request is saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/catalogs:
     get:
@@ -123,7 +154,9 @@ paths:
                   data: { $ref: '#/components/schemas/SelfProfile' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     patch:
       summary: Edit own profile draft fields
       description: |
@@ -142,9 +175,11 @@ paths:
               schema: { $ref: '#/components/schemas/RevisionedUpdateResponse' }
         '400': { $ref: '#/components/responses/NoUpdates' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/profile/preview:
     get:
@@ -156,7 +191,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PublicProfileResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/prompts:
     post:
@@ -187,9 +224,11 @@ paths:
                   data: { $ref: '#/components/schemas/SelfPromptAnswer' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/prompts/{id}:
     parameters:
@@ -227,9 +266,11 @@ paths:
                   data: { $ref: '#/components/schemas/SelfPromptAnswer' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     delete:
       summary: Remove an own answer
       responses:
@@ -250,7 +291,9 @@ paths:
                       deleted: { const: true }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/preferences:
     get:
@@ -268,7 +311,9 @@ paths:
                   data: { $ref: '#/components/schemas/Preferences' }
                   meta: { $ref: '#/components/schemas/Meta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     patch:
       summary: Edit dating preferences
       requestBody:
@@ -284,9 +329,11 @@ paths:
               schema: { $ref: '#/components/schemas/RevisionedUpdateResponse' }
         '400': { $ref: '#/components/responses/NoUpdates' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/RevisionConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/profiles/{id}:
     parameters:
@@ -325,6 +372,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/discovery:
     get:
@@ -352,7 +400,10 @@ paths:
         Errors: `INVALID_CURSOR` (400, malformed, tampered or another person's
         cursor), `DISCOVERY_SESSION_EXPIRED` and `DISCOVERY_SESSION_INVALIDATED`
         (409, retryable: restart without a cursor), `ACCOUNT_NOT_ELIGIBLE` and
-        `DISCOVERY_PAUSED` (403).
+        `DISCOVERY_PAUSED` (403), `RATE_LIMITED` (429, retryable after
+        `Retry-After` seconds). Requests without a cursor are limited per account
+        per hour (`DISCOVERY_SESSIONS_PER_HOUR`, default 30), whatever their
+        outcome; paging with a cursor only counts toward the generic request limit.
       parameters:
         - name: cursor
           in: query
@@ -370,6 +421,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/DiscoverySessionStale' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/passes:
     post:
@@ -399,6 +451,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   # --- Likes (Phase 08) -----------------------------------------------------
   /v1/likes:
@@ -407,7 +460,12 @@ paths:
       summary: Like one photo or prompt answer at a specific content version
       description: |
         The sender is the verified token's account; any sender field in the body
-        is ignored. Validation (recipient available, target owned by the
+        is ignored. The sender must be able to view the recipient's profile right
+        now, by the same rule as `GET /v1/profiles/{id}` (someone they could see
+        in Discover, or someone with a pending like to them); everyone else is
+        404 `PROFILE_UNAVAILABLE`. Liking someone ends that access until the pair
+        matches, so only a retry with the original Idempotency-Key still returns
+        the like. Validation (recipient available, target owned by the
         recipient, published, version current) happens before the daily charge,
         all inside one transaction: a rejected or rolled-back like charges nothing.
         One like per direction ever in v1. The sender never learns whether a like
@@ -415,11 +473,13 @@ paths:
 
         Error codes: 400 `IDEMPOTENCY_KEY_REQUIRED`; 403 `ACCOUNT_NOT_ELIGIBLE`,
         `ACCOUNT_PAUSED`, `ACCOUNT_RESTRICTED`; 404 `PROFILE_UNAVAILABLE`
-        (recipient missing, inactive, unready, paused or blocked), `NOT_FOUND`
+        (recipient missing, inactive, unready, paused, blocked or not viewable by
+        the sender; indistinguishable), `NOT_FOUND`
         (caller has no account); 409 `TARGET_UNAVAILABLE`, `TARGET_STALE`,
         `ALREADY_LIKED`, `INCOMING_LIKE_PENDING`, `IDEMPOTENCY_KEY_REUSED`;
         422 `VALIDATION_ERROR`, `SELF_LIKE`; 429 `QUOTA_EXHAUSTED` with `limit`,
-        `resetAt` and a `Retry-After` header in seconds.
+        `resetAt` and a `Retry-After` header in seconds, or `RATE_LIMITED`
+        (retryable, generic request limit) with `retryAfterSeconds` and the same header.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -473,6 +533,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/LikeError' }
         '404': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/likes/incoming:
     get:
@@ -506,6 +567,7 @@ paths:
         '403': { $ref: '#/components/responses/LikeError' }
         '404': { $ref: '#/components/responses/LikeError' }
         '422': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/likes/{id}/decline:
     parameters:
@@ -543,6 +605,7 @@ paths:
         '403': { $ref: '#/components/responses/LikeError' }
         '404': { $ref: '#/components/responses/LikeError' }
         '409': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/likes/{id}/accept:
     parameters:
@@ -560,6 +623,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/LikeError' }
         '404': { $ref: '#/components/responses/LikeError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '501': { $ref: '#/components/responses/LikeError' }
 
   # --- Staff API (Phase 13). Every route: verified Firebase ID token with the
@@ -580,6 +644,7 @@ paths:
               schema: { $ref: '#/components/schemas/AdminMeResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/reasons:
     get:
@@ -592,6 +657,7 @@ paths:
               schema: { $ref: '#/components/schemas/AdminReasonsResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/photos:
     get:
@@ -610,6 +676,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/photos/{id}:
     parameters:
@@ -625,6 +692,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/content/photos/{id}/media/{variant}:
     parameters:
@@ -645,6 +713,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503':
           description: Storage temporarily unavailable (retryable)
           content:
@@ -677,6 +746,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/users/{id}:
     parameters:
@@ -692,6 +762,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/users/{id}/suspend:
     parameters:
@@ -724,6 +795,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/users/{id}/restore:
     parameters:
@@ -753,6 +825,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/admin/audit-log:
     get:
@@ -770,6 +843,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
 components:
   securitySchemes:
@@ -786,6 +860,11 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     Forbidden:
       description: Account restricted or not eligible
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    AccountRestricted:
+      description: '`ACCOUNT_RESTRICTED`: the account is suspended, being deleted or deleted'
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -821,6 +900,18 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     DiscoverySessionStale:
       description: Session expired or preferences changed; restart without a cursor
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RateLimited:
+      description: |
+        `RATE_LIMITED` (retryable): this account sent too many requests. Wait the
+        `Retry-After` seconds (also `error.retryAfterSeconds`), then retry with the
+        same request and Idempotency-Key, if any.
+      headers:
+        Retry-After:
+          description: Whole seconds to wait before retrying
+          schema: { type: integer, minimum: 1 }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -877,6 +968,10 @@ components:
             currentRevision:
               type: integer
               description: Present on REVISION_CONFLICT
+            retryAfterSeconds:
+              type: integer
+              minimum: 1
+              description: Present on RATE_LIMITED and UPLOADS_BUSY; same value as the Retry-After header
         requestId: { type: string }
 
     ErrorCode:
@@ -889,9 +984,18 @@ components:
         - Any route: 401 `UNAUTHENTICATED`, `TOKEN_REVOKED`; 500 `INTERNAL_ERROR`;
           404 `NOT_FOUND` (no app account yet: call `POST /v1/me/bootstrap`; also
           a missing own resource or unknown route).
+        - Any request body: 400 `INVALID_JSON` (the body is not valid JSON);
+          413 `PAYLOAD_TOO_LARGE` (a JSON body over 1 MB); 415
+          `UNSUPPORTED_MEDIA_TYPE` (an unsupported body charset or encoding);
+          400 `BAD_REQUEST` (any other malformed request, such as a path
+          parameter that is not valid percent-encoding). None are retryable:
+          fix the request instead. A missing body is treated as `{}`.
+        - Any authenticated route: 429 `RATE_LIMITED` (retryable after the
+          `Retry-After` header, also sent as `retryAfterSeconds`).
         - Accounts: 403 `ACCOUNT_RESTRICTED` (suspended or being deleted),
           `ACCOUNT_NOT_ELIGIBLE` (not active and profile-ready); 422
-          `AGE_INELIGIBLE` (under 18); 409 `INVALID_STATE` (onboarding step
+          `AGE_INELIGIBLE` (under 18; after one refused under-18 date, every
+          later birth date); 409 `INVALID_STATE` (onboarding step
           after onboarding ended); 400 `NO_UPDATES` (no editable field sent).
         - Profiles and prompts: 422 `VALIDATION_ERROR`, `PROMPT_LIMIT` (three
           answers already); 409 `REVISION_CONFLICT` (with `currentRevision`),
@@ -906,7 +1010,7 @@ components:
           `PAYLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`, `INVALID_IMAGE`,
           `IMAGE_DIMENSIONS_INVALID`, `PHOTO_LIMIT_REACHED`, `PHOTO_SET_BUSY`,
           `PHOTO_NOT_FOUND`, `PHOTO_SET_MISMATCH`, `MEDIA_UNAVAILABLE`,
-          `STORAGE_UNAVAILABLE`.
+          `STORAGE_UNAVAILABLE`, `UPLOADS_BUSY` (503, retryable after `Retry-After`).
         - Likes (see `/v1/likes*` per endpoint): `ACCOUNT_PAUSED`, `SELF_LIKE`,
           `TARGET_UNAVAILABLE`, `TARGET_STALE`, `ALREADY_LIKED`,
           `INCOMING_LIKE_PENDING`, `QUOTA_EXHAUSTED`, `LIKE_NOT_FOUND`,
@@ -918,7 +1022,10 @@ components:
         - UNAUTHENTICATED
         - TOKEN_REVOKED
         - INTERNAL_ERROR
+        - INVALID_JSON
+        - BAD_REQUEST
         - NOT_FOUND
+        - RATE_LIMITED
         - ACCOUNT_RESTRICTED
         - ACCOUNT_NOT_ELIGIBLE
         - AGE_INELIGIBLE
@@ -949,6 +1056,7 @@ components:
         - PHOTO_SET_MISMATCH
         - MEDIA_UNAVAILABLE
         - STORAGE_UNAVAILABLE
+        - UPLOADS_BUSY
         - ACCOUNT_PAUSED
         - SELF_LIKE
         - TARGET_UNAVAILABLE
@@ -1437,6 +1545,10 @@ components:
               type: string
               format: date-time
               description: Present on QUOTA_EXHAUSTED; the next UTC midnight
+            retryAfterSeconds:
+              type: integer
+              minimum: 1
+              description: Present on RATE_LIMITED; same value as the Retry-After header
         requestId: { type: string }
 
     LikeTarget:

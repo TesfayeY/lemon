@@ -4,6 +4,7 @@ import type { Auth } from 'firebase-admin/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
 import { canAuthenticate, canInteract, type UserDocument } from '../auth/account.js';
+import { loadOwnAccount } from '../auth/load-account.js';
 import { createEmptyProfile, normalizeWhitespace, MAX_PROMPT_ANSWERS, type ProfileDocument, type PromptAnswerDocument } from './schema.js';
 import {
   validateDisplayName, validateGenderIdentity, validateGenderSelfDescription, validateIntention,
@@ -70,15 +71,8 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
    * Update own profile fields. Uses expected revision for conflict detection.
    */
   router.patch('/v1/me/profile', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     const profile = await findOrCreateProfile(user._id);
     const body = req.body as Record<string, unknown>;
@@ -234,15 +228,8 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
    * Owner view: every own field, visibility settings and prompt answers.
    */
   router.get('/v1/me/profile', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     const profile = await findOrCreateProfile(user._id);
     const answers = await promptAnswers.find({ ownerId: user._id }).toArray();
@@ -259,15 +246,8 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
    * see, so hidden fields and photos still in review are absent.
    */
   router.get('/v1/me/profile/preview', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     await findOrCreateProfile(user._id);
     const preview = (await loadPublicProfiles(db, [user._id])).get(user._id)!;
@@ -284,15 +264,8 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
    * It publishes immediately (D-13) and counts toward readiness.
    */
   router.post('/v1/me/prompts', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     const body = req.body as Record<string, unknown>;
     const errors: FieldError[] = [];
@@ -386,15 +359,8 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
    * a new content version, so likes on the old words show "this item changed".
    */
   router.patch('/v1/me/prompts/:id', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     const answerId = req.params['id'] as string;
     const answer = await promptAnswers.findOne({ _id: answerId, ownerId: user._id });
@@ -476,15 +442,8 @@ export function createProfileRoutes(db: Db, auth: Auth, options: ProfileRoutesOp
    * Remove a prompt answer. Recomputes readiness.
    */
   router.delete('/v1/me/prompts/:id', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     const result = await promptAnswers.deleteOne({
       _id: req.params['id'],

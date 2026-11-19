@@ -39,7 +39,7 @@ answers publish as soon as they are saved (D-13, 2026-11-12).
 | App gate | Bootstraps, reads `GET /v1/me`, routes by `accountStatus`: onboarding → flow, active → shell, restricted/deleting → explanation. Signed-out and offline states. |
 | Onboarding shell | "Step N of M" title with progress bar, back button (and system back), one step per screen. Resumes at the earliest step whose requirement the server reports missing. |
 | Verify email | Only shown while `emailVerified` is missing. Refreshes the token, re-bootstraps, re-checks. |
-| Adult gate | Date picker in text-entry mode, adult-only message, privacy note. Local checks for empty/future/under-18 for instant feedback; the server's `AGE_INELIGIBLE` always wins. Sends a date-only `YYYY-MM-DD`. Respectful ineligible screen. |
+| Adult gate | Date picker in text-entry mode, adult-only message, privacy note. Local checks for empty/future/under-18 for instant feedback; the server's `AGE_INELIGIBLE` always wins. Sends a date-only `YYYY-MM-DD`. Respectful ineligible screen. After one under-18 date the server locks the gate (see below), so every later date also gets `AGE_INELIGIBLE` and lands on the same screen. |
 | Before you join | Audience statement (D-02), respect note, terms checkbox, draft-legal-text note. |
 | The basics | First name (grapheme-counted, 40 max), gender from catalog with "show on profile", relationship intention. |
 | Location | Search over catalog US cities only, shown as "Seattle, WA"; same-named cities stay distinct; "unknown city" help. No free text, no country picker. |
@@ -84,6 +84,16 @@ reorder refreshes the grid and says so.
 - **Legal text:** no final terms exist; the step says so (`termsDraftNote`).
 - **P-02:** the birth date is self-declared and labeled as private; nothing
   claims verification.
+- **Age gate lock (server):** an under-18 date on `PATCH /v1/me/onboarding`
+  sets `ageGate.blockedAt` on the user document. The date itself is never
+  stored, any birth date saved earlier is cleared (`adultEligible` goes back
+  to false), and nothing else from that request (e.g. `termsAccepted`) is
+  saved. From then on every `birthDate` submission, valid or not, gets the
+  same `422 AGE_INELIGIBLE`; an adult date racing the lock can't land after
+  it. There is no self-service unlock: date changes go through support
+  (spec §4.1), and that support tool doesn't exist yet. `ageGate` is in no
+  DTO (`GET /v1/me` included), so the app learns about the lock only from
+  the 422.
 - **Sign-in:** Phase 03 shipped the API side only; there are no Flutter sign-in
   screens. Until they exist the app runs with a dev token source.
 - Photos that are pending count as "submitted" for the Continue button (UX

@@ -1,4 +1,5 @@
-import { loadConfig } from './config.js';
+import { ConfigError, loadConfig } from './config.js';
+import { describeError } from './logging.js';
 import { createApp } from './app.js';
 import { connectDb, checkMongo } from './db.js';
 import { initFirebase, checkFirebase, getAuth } from './firebase.js';
@@ -12,6 +13,7 @@ import { createMediaRoutes } from './modules/media/routes.js';
 import { createConfiguredDiscoveryService, createDiscoveryRoutes } from './modules/discovery/routes.js';
 import { createLikesRoutes } from './modules/likes/routes.js';
 import { createAdminRoutes } from './modules/admin/routes.js';
+import { installRequestRateLimit } from './modules/rate-limit/token-bucket.js';
 
 async function main() {
   const config = loadConfig();
@@ -35,6 +37,9 @@ async function main() {
   // One discovery service: Discover, profile reads and photo reads recheck the same rules
   const discovery = createConfiguredDiscoveryService(db, config);
 
+  // Generic per-account request limit for every authenticated route (per process)
+  installRequestRateLimit(config);
+
   // Create and start the Express app
   const app = createApp({
     mongoCheck: checkMongo,
@@ -46,7 +51,7 @@ async function main() {
       createCatalogRoutes(),
       createMediaRoutes(db, auth, config, { profileAccess: discovery }),
       createDiscoveryRoutes(db, auth, config, {}, discovery),
-      createLikesRoutes(db, auth, config),
+      createLikesRoutes(db, auth, config, { profileAccess: discovery }),
       createAdminRoutes(db, client, auth, config),
     ],
   });
@@ -56,7 +61,8 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  console.error('Failed to start server:', err.message);
+main().catch((err: unknown) => {
+  // Other startup errors can echo stored values (e.g. a duplicate key while building a unique index)
+  console.error(`Failed to start server: ${err instanceof ConfigError ? err.message : describeError(err)}`);
   process.exit(1);
 });

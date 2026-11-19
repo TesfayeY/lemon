@@ -13,6 +13,8 @@ info:
     - There are no public or permanent media URLs. Every media read goes through
       `GET /v1/media/{assetId}/{variant}`, which rechecks access on each request.
     - Errors use `{ error: { code, message, retryable, ... }, requestId }`.
+    - Every operation can answer 429 `RATE_LIMITED` (retryable, `Retry-After` in
+      seconds) from the generic per-account request limit.
 servers:
   - url: http://localhost:3000
 security:
@@ -32,6 +34,17 @@ paths:
         Idempotent per `Idempotency-Key`: repeating a completed upload with the same
         key and the same bytes returns the original photo (200) instead of creating
         another. A key reused with different bytes is a 409.
+
+        Limits (checked before the body is read, so an over-limit request is never
+        buffered or decoded):
+        - `PHOTO_UPLOADS_PER_HOUR` (default 10) upload attempts per account per
+          hour, across all API processes. Every attempt counts, including ones that
+          fail validation. A request whose `Idempotency-Key` is already on a stored
+          photo (a retry after a lost response) does not count. Over the limit:
+          429 `RATE_LIMITED` with `Retry-After` until the next hour.
+        - `MEDIA_MAX_CONCURRENT_UPLOADS` (default 4) uploads in progress per API
+          process. When all are taken: 503 `UPLOADS_BUSY` with `Retry-After`; it
+          spends no attempt. Retry with the same key.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -103,8 +116,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503':
-          description: '`STORAGE_UNAVAILABLE` or `PHOTO_SET_BUSY` (both retryable with the same key)'
+          description: |
+            `STORAGE_UNAVAILABLE`, `PHOTO_SET_BUSY` or `UPLOADS_BUSY` (with `retryAfterSeconds` and a
+            `Retry-After` header); all retryable with the same key
+          headers:
+            Retry-After:
+              description: Sent with `UPLOADS_BUSY`; whole seconds to wait
+              schema: { type: integer, minimum: 1 }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -137,6 +157,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/AccountRestricted' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/photos/order:
     patch:
@@ -190,6 +211,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/me/photos/{photoId}:
     delete:
@@ -227,6 +249,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/media/{assetId}/{variant}:
     get:
@@ -284,6 +307,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503':
           description: '`STORAGE_UNAVAILABLE` (retryable)'
           content:
@@ -320,6 +344,17 @@ components:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     NotFound:
       description: '`NOT_FOUND`: no app account for this identity (call `POST /v1/me/bootstrap`)'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    RateLimited:
+      description: |
+        `RATE_LIMITED` (retryable), with `retryAfterSeconds`: the generic per-account request
+        limit, or on upload the hourly upload-attempt limit. Wait `Retry-After` seconds.
+      headers:
+        Retry-After:
+          description: Whole seconds to wait before retrying
+          schema: { type: integer, minimum: 1 }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -413,6 +448,8 @@ components:
               enum:
                 - UNAUTHENTICATED
                 - TOKEN_REVOKED
+                - INVALID_JSON
+                - BAD_REQUEST
                 - NOT_FOUND
                 - ACCOUNT_RESTRICTED
                 - ACCOUNT_NOT_ELIGIBLE
@@ -433,7 +470,13 @@ components:
                 - VALIDATION_ERROR
                 - MEDIA_UNAVAILABLE
                 - STORAGE_UNAVAILABLE
+                - UPLOADS_BUSY
+                - RATE_LIMITED
                 - INTERNAL_ERROR
             message: { type: string }
             retryable: { type: boolean }
+            retryAfterSeconds:
+              type: integer
+              minimum: 1
+              description: Present on RATE_LIMITED and UPLOADS_BUSY; same value as the Retry-After header
         requestId: { type: string }

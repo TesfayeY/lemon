@@ -1,8 +1,9 @@
 import { Router, type Request, type Response } from 'express';
 import type { Db } from 'mongodb';
 import type { Auth } from 'firebase-admin/auth';
-import { createAuthMiddleware, type AuthenticatedRequest } from '../auth/middleware.js';
+import { createAuthMiddleware } from '../auth/middleware.js';
 import type { UserDocument } from '../auth/account.js';
+import { loadOwnAccount } from '../auth/load-account.js';
 import { createDefaultPreferences, MIN_AGE, MAX_AGE, type PreferencesDocument, type LocationScope } from './schema.js';
 import { isValidGenderId } from '../catalogs/data.js';
 import { isDuplicateKeyError } from '../../indexes.js';
@@ -44,15 +45,8 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
 
   /** GET /v1/me/preferences */
   router.get('/v1/me/preferences', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     const prefs = await findOrCreatePreferences(user._id);
 
@@ -71,15 +65,8 @@ export function createPreferencesRoutes(db: Db, auth: Auth) {
 
   /** PATCH /v1/me/preferences */
   router.patch('/v1/me/preferences', requireAuth, async (req: Request, res: Response) => {
-    const { uid } = req as AuthenticatedRequest;
-    const user = await users.findOne({ firebaseUid: uid });
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'NOT_FOUND', message: 'Account not found', retryable: false },
-        requestId: req.requestId,
-      });
-      return;
-    }
+    const user = await loadOwnAccount(users, req, res);
+    if (!user) return;
 
     const prefs = await findOrCreatePreferences(user._id);
 

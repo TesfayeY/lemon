@@ -106,13 +106,13 @@ Follow the patterns in `apps/api/test/profiles.test.ts` (in-memory Db fake plus 
 
 ### Needs a change outside this brief's files (not made)
 
-1. **Run the cleanup worker.** `src/workers/media-cleanup.ts` exports `runMediaCleanup()` and runs standalone (`npx tsx src/workers/media-cleanup.ts [--once]`), but nothing starts it yet. It needs the shared worker entry point (D-06) or a `package.json` script. Until then, delete purges objects inline and the worker only catches failures and crashed uploads.
+1. ~~**Run the cleanup worker.**~~ Done in `fix/api-hardening`: the worker entry point `src/worker.ts` (D-06) runs the cleanup every minute. See "Running the cleanup worker" below. Delete still purges objects inline; the worker catches storage failures and uploads left in `processing` by a crash, which would otherwise hold one of the owner's 6 photo slots for good.
 2. **Index for worker queries.** The cleanup scans `{ state, objectsPurgedAt }` and `{ state, createdAt }`, which the allowed `{ ownerId, state, order }` index doesn't cover. Suggest adding `photos: { state: 1, objectsPurgedAt: 1 }` before data grows.
 3. **Profiles integration (profiles owner).** `toPublicPhotoDTO()` is ready for the public profile and preview DTOs. Load only `approved` photos sorted by `order`.
 
 ### Follow-ups (out of scope here)
 
-- Upload rate limit: the spec proposes 10 upload attempts per hour per account.
+- ~~Upload rate limit~~ Done in `fix/rate-limits`: 10 upload attempts per hour per account (MongoDB counter) and at most 4 uploads decoding at once per process, both checked before the body is read. See `docs/features/rate-limits.md`.
 - Phase 15 (account deletion): erase the user's `photos` records, including `deleted` ones (metadata only, no images), plus `photoSets` and any remaining objects. Retention period depends on P-06.
 - Phase 13: write the review state change and its `auditLog` entry in one Mongo transaction, and move review behind the role-checked admin API.
 - P-04 is still open: `FirebaseMediaStorage` is a stub that throws.
@@ -125,5 +125,18 @@ cd apps/api
 npx tsx --env-file=.env ../../scripts/review-photos.ts list            # pending photos + local file to view
 npx tsx --env-file=.env ../../scripts/review-photos.ts approve <id> --actor <you>
 npx tsx --env-file=.env ../../scripts/review-photos.ts reject <id> --actor <you> --reason low_quality
-npx tsx --env-file=.env src/workers/media-cleanup.ts --once
+npx tsx --env-file=.env src/worker.ts --once                           # one cleanup pass, then exit
 ```
+
+### Running the cleanup worker
+
+`src/worker.ts` is the background worker entry point: a separate process next to the API, with the same environment (`MONGO_URI`, `MONGO_DB_NAME`, `MEDIA_LOCAL_DIR`, ...). It runs `runMediaCleanup()` once at startup and then one minute after each pass finishes, so passes never overlap. Each pass expires uploads stuck in `processing` for over 15 minutes, which frees the slot and the `Idempotency-Key`, and purges the objects of failed and deleted photos.
+
+```bash
+cd apps/api
+npm run worker                  # development, via tsx (export the env first, as for `npm run dev`)
+npm run build && npm run start:worker    # production: node dist/worker.js
+npm run worker -- --once        # a single pass, then exit (non-zero if it failed), e.g. from cron
+```
+
+On `SIGINT` or `SIGTERM` the worker starts no new pass, lets the running one finish, closes MongoDB and exits 0. A second signal exits at once. Every step is idempotent, so a forced stop only delays cleanup to the next pass. Run one worker per environment. A second one is safe (updates are compare-and-set) but does nothing useful. While media uses `LocalMediaStorage` (P-04 is open), the worker must see the same `MEDIA_LOCAL_DIR` as the API: same machine or a shared volume. Logs show counts only, and only for passes that changed something.
