@@ -10,9 +10,9 @@
 ## Files
 
 - `apps/api/src/modules/likes/`: `schema.ts` (document shape), `validation.ts` (body, comment, cursor), `service.ts` (send, decline, list), `dto.ts` (allowlisted responses), `pair-guard.ts` (block/pair hook), `routes.ts`, `index.ts`. `quota.ts` is unchanged.
-- `apps/api/test/likes.test.ts`: 48 tests, all against the real local MongoDB replica set.
+- `apps/api/test/likes.test.ts`: 52 tests, all against the real local MongoDB replica set. The harness allows every profile by default (its users have no preferences); the contextual-access tests swap in a refusing stub and the real discovery service.
 - `contracts/openapi.yaml`: the likes paths, the `LikeError` response and the `Like*` schemas.
-- Shared files (small additive edits): `src/index.ts` (route registration), `src/indexes.ts` (likes indexes plus `ensureQuotaIndexes`), `src/config.ts` and `.env.example` (`LIKES_PER_UTC_DAY`).
+- Shared files (small additive edits): `src/index.ts` (route registration, with the shared discovery service as `profileAccess`), `src/indexes.ts` (likes indexes plus `ensureQuotaIndexes`), `src/config.ts` and `.env.example` (`LIKES_PER_UTC_DAY`).
 
 ## Endpoints
 
@@ -20,7 +20,7 @@ All of these need `Authorization: Bearer <Firebase ID token>`. The sender and re
 
 | Endpoint | Behavior |
 | --- | --- |
-| `POST /v1/likes` | Body `{ toUserId, target: { kind: 'photo' \| 'prompt', id, contentVersion }, comment? }` plus an `Idempotency-Key` header. Returns `201 { like, quota }`, or `200` with the original like when the same key and payload are retried. |
+| `POST /v1/likes` | Body `{ toUserId, target: { kind: 'photo' \| 'prompt', id, contentVersion }, comment? }` plus an `Idempotency-Key` header. The sender must be able to view the recipient's profile right now (the same check as `GET /v1/profiles/:id`). Returns `201 { like, quota }`, or `200` with the original like when the same key and payload are retried. |
 | `GET /v1/likes/quota` | `{ limit, used, remaining, resetAt }` for the composer. `resetAt` is the next UTC midnight. |
 | `GET /v1/likes/incoming?cursor=&limit=` | Pending likes from senders who are currently available, newest first. Uses an opaque keyset cursor in `meta.nextCursor`. |
 | `POST /v1/likes/:id/decline` | Recipient only. Idempotent and terminal. Charges nothing. |
@@ -32,7 +32,7 @@ Errors use `{ error: { code, message, retryable, ... }, requestId }`:
 | --- | --- |
 | 400 | `IDEMPOTENCY_KEY_REQUIRED`, `INVALID_CURSOR` |
 | 403 | `ACCOUNT_NOT_ELIGIBLE` (sender or viewer not active and ready), `ACCOUNT_PAUSED` (paused sender), `ACCOUNT_RESTRICTED` |
-| 404 | `PROFILE_UNAVAILABLE` (recipient missing, inactive, unready, paused or blocked; all identical), `LIKE_NOT_FOUND`, `NOT_FOUND` (no account) |
+| 404 | `PROFILE_UNAVAILABLE` (recipient missing, inactive, unready, paused, blocked or not viewable by the sender; all identical), `LIKE_NOT_FOUND`, `NOT_FOUND` (no account) |
 | 409 | `TARGET_STALE` (version mismatch), `TARGET_UNAVAILABLE` (unknown, not owned by the recipient, unpublished, rejected or deleted), `ALREADY_LIKED`, `INCOMING_LIKE_PENDING`, `IDEMPOTENCY_KEY_REUSED`, `LIKE_ALREADY_DECIDED` |
 | 422 | `VALIDATION_ERROR` (`fieldErrors`), `SELF_LIKE` |
 | 429 | `QUOTA_EXHAUSTED` with `limit`, `resetAt` and a `Retry-After` header |
@@ -53,9 +53,13 @@ Indexes, created in `src/indexes.ts`:
 ## How sending works
 
 1. Check the Idempotency-Key format, then the body. Unknown fields are stripped.
-2. If the sender already used this key, return the original like (`200`) when the payload matches, or `409 IDEMPOTENCY_KEY_REUSED` when it doesn't. A replay works even after the target changed or the allowance ran out.
+2. If the sender already used this key, return the original like (`200`) when the payload matches, or `409 IDEMPOTENCY_KEY_REUSED` when it doesn't. A replay works even after the target changed, the allowance ran out or the sender lost access to the recipient (which liking itself causes, D-11), so this lookup comes before the access check.
 3. Sender checks: active, profile-ready and not paused. A self like is rejected.
-4. One MongoDB transaction (snapshot reads, majority writes):
+4. Contextual access: `profileAccess.canViewProfile(sender, toUserId)`, the same check as `GET /v1/profiles/:id` and photo reads (D-12). In production it's the shared discovery service: the recipient is someone the sender could see in Discover right now (every discovery rule, including mutual gender, age and location preferences, no earlier like from the sender, no active pass and no pair exclusion), or has a pending like to the sender. A refusal is the same `404 PROFILE_UNAVAILABLE` as any unavailable profile and charges nothing. Without this, anyone with a user ID and a photo or prompt ID could like and comment on a person who could never see them. Notes:
+   - `profileAccess` is a required route option, so likes never fall back to open access.
+   - The discovery service reads outside the like transaction (it takes no session), so access lost in the instant before the commit can still race a like. The transaction rechecks the recipient's account and pair state.
+   - On a refusal the key is looked up once more: a concurrent retry with the same key may have committed in between, and that like ends access by itself. The answer is then its replay, not a 404.
+5. One MongoDB transaction (snapshot reads, majority writes):
    - the recipient is active, ready and not paused
    - `pairGuard.check` passes
    - the target belongs to the recipient, is published (an approved photo, or a prompt answer with `approvedText`), and its version matches
@@ -63,7 +67,7 @@ Indexes, created in `src/indexes.ts`:
    - `consumeLikeQuota(..., session)` succeeds
    - insert the like
    - `pairGuard.touch`
-5. Every rejection throws inside the transaction, so nothing is charged. A failure after the charge rolls the charge back (tested). Concurrent charges conflict and the driver retries them. The callback re-reads everything, including the idempotency key, on each retry. A duplicate-key error from a committed competitor is resolved to a replay or `ALREADY_LIKED`.
+6. Every rejection throws before the charge, so nothing is charged. A failure after the charge rolls the charge back (tested). Concurrent charges conflict and the driver retries them. The callback re-reads everything, including the idempotency key, on each retry. A duplicate-key error from a committed competitor is resolved to a replay or `ALREADY_LIKED`.
 
 Comments are NFC-normalized and whitespace-collapsed, then checked against 200 grapheme clusters with `Intl.Segmenter`. That means an emoji ZWJ sequence, a flag or a letter with combining marks counts as one. A blank comment becomes no comment. A raw cap of 4000 UTF-16 code units rejects combining-mark floods before segmentation.
 
@@ -85,10 +89,11 @@ Comments are NFC-normalized and whitespace-collapsed, then checked against 200 g
 - **P-10 (open):** the allowance is `LIKES_PER_UTC_DAY` (default 8). `QUOTA_POLICY_VERSION` is fixed at 1 in `routes.ts`. Bump it if the meaning of the policy changes.
 - **Recipient availability** uses the fields that exist today: `users.accountStatus === 'active'`, `profileReady` and `!discoverPaused`. There is no pause endpoint until Phase 15, so `discoverPaused` is only set by tests and seeds for now.
 - **Unknown body fields are ignored, not rejected.** This matches the profile and media routes and the Phase 08 "body UID spoof ignored" test. §7's "reject unknown fields" is read as applying to privileged and admin DTOs.
-- **Error choices:** a stale version is `409 TARGET_STALE`. Every other unusable target, including a target owned by someone else, is `409 TARGET_UNAVAILABLE`, so a sender can't probe other users' content IDs. Blocks look exactly like any other unavailable profile (`404 PROFILE_UNAVAILABLE`).
-- **Reverse pending like:** if the recipient already has a pending like to the sender, sending one back returns `409 INCOMING_LIKE_PENDING` ("answer their like in Likes") and charges nothing. The recipient's availability is checked first, so this can't reveal a hidden like. A declined like in the other direction doesn't block a new like.
-- **Sender loses access after liking (D-11):** the liked person leaves the sender's Discover, and their profile and photos answer 404 to the sender until the pair matches. There is no sent-likes list.
-- **No decline leak:** the sender's DTO has no state, and a second like to someone who declined returns the same `ALREADY_LIKED` as any duplicate.
+- **Error choices:** a stale version is `409 TARGET_STALE`. Every other unusable target, including a target owned by someone else, is `409 TARGET_UNAVAILABLE`, so a sender can't probe other users' content IDs. Blocks and profiles the sender may not view look exactly like any other unavailable profile (`404 PROFILE_UNAVAILABLE`). The access check runs before the target check, so a hidden recipient's content IDs can't be probed either.
+- **Liking needs profile access:** you can only like someone whose profile you may view right now. Passes count too: someone you passed can't be liked until the pass expires, just as their profile is unavailable to you.
+- **Reverse pending like:** if the recipient already has a pending like to the sender, sending one back returns `409 INCOMING_LIKE_PENDING` ("answer their like in Likes") and charges nothing. The recipient's availability and the sender's access are checked first, so this can't reveal a hidden like. The like service doesn't treat a declined like in the other direction as a block, but whoever declined can't view that person any more (D-10), so the access check refuses the like with `404`.
+- **Sender loses access after liking (D-11):** the liked person leaves the sender's Discover, and their profile, their photos and any further like to them (with a new key) answer 404 to the sender until the pair matches. Only a retry with the original key still returns the original like. There is no sent-likes list.
+- **No decline leak:** the sender's DTO has no state. A second like to the same person gets the same answer whether or not they declined: `404 PROFILE_UNAVAILABLE`, because liking ended access. `ALREADY_LIKED` is now only reached by races (the duplicate-key path) and when access remains, for example with an allow-all access stub in tests.
 - **Accept** returns `501` instead of pretending to work. Other users get `404`, so the endpoint can't be used to probe like IDs.
 - **Context snapshot** stores the recipient's own published prompt text so they recognize the like after edits. Removed content is never rendered. Phase 15 deletion must purge `likes` for both directions.
 - **Incoming cursor** is unsigned base64url JSON. It is only applied inside the caller's own list (the query always filters on `toUserId`), so forging one reveals nothing. Ties on `createdAt` are broken by `_id`. The contract index has no `_id`, so ties are sorted in memory. That's fine at pilot volumes. Measure in Phase 17.

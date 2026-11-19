@@ -28,7 +28,7 @@ isn't set up.
 | `LEMON_FIREBASE_AUTH_DOMAIN` | web only | |
 | `LEMON_FIREBASE_IOS_BUNDLE_ID` | iOS only | |
 | `LEMON_AUTH_EMULATOR_HOST` | dev only | `host:port` of the Auth emulator |
-| `LEMON_API_BASE_URL` | no | Defaults to `http://localhost:3000` |
+| `LEMON_API_BASE_URL` | release builds | Defaults to `http://localhost:3000` for development. Release builds must pass an `https` URL or the app stops at launch |
 
 \* Not needed when `LEMON_AUTH_EMULATOR_HOST` is set: the emulator accepts
 placeholder options, and the project ID defaults to `lemon-dev`.

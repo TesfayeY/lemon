@@ -45,7 +45,7 @@ async function main() {
       createCatalogRoutes(),
       createMediaRoutes(db, auth, config, { profileAccess: discovery }),
       createDiscoveryRoutes(db, auth, config, {}, discovery),
-      createLikesRoutes(db, auth, config),
+      createLikesRoutes(db, auth, config, { profileAccess: discovery }),
       createAdminRoutes(db, client, auth, config),
     ],
   });
